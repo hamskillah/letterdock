@@ -5,6 +5,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolveMx, resolveTxt } from 'node:dns/promises';
 import { resolve } from 'node:path';
 import { domainToASCII } from 'node:url';
+import { domainConnectLink } from './domain-connect.js';
 import { connectCloudflare, connectionStatus, domainSetup, SetupConflict } from './cloudflare.js';
 import { db, migrate } from './db.js';
 import { runJobs, stagingStatus } from './jobs.js';
@@ -158,6 +159,12 @@ app.delete<{Params:{name:string}}>('/api/domains/:name', async (req,res) => {
   );
   if(!removed.rowCount) return res.code(404).send({message:'Domain not found'});
   return {ok:true};
+});
+app.get<{Params:{name:string}}>('/api/domains/:name/domain-connect',async(req,res)=>{
+  const {rows:[domain]}=await db.query('SELECT name,token FROM domains WHERE name=$1 AND removed_at IS NULL',[req.params.name]);
+  if(!domain)return res.code(404).send({message:'Domain not found'});
+  try { return await domainConnectLink(domain.name,domain.token); }
+  catch { return res.code(502).send({message:'Cloudflare authorization could not be prepared. Try again.'}); }
 });
 app.route<{Params:{name:string}}>({
   method:['GET','POST'], url:'/api/domains/:name/cloudflare',

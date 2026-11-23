@@ -21,6 +21,7 @@ async function api<T>(path:string, method='GET', data?:unknown): Promise<T> {
   return result as T;
 }
 const when=(value:string)=>new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(value));
+const returningDomain = new URLSearchParams(location.search).get('domainConnect');
 const blankFilters={from:'',to:'',subject:'',label:'',since:'',until:'',attachment:''};
 const logo=<img className="brand-mark" src="/letterdock.svg" width="36" height="36" alt=""/>;
 
@@ -80,7 +81,7 @@ function App(){
     return '/messages?'+params;
   }
   useEffect(()=>{
-    directory().then(()=>setAuthorized(true)).catch(cause=>{
+    directory().then(()=>{setAuthorized(true);if(returningDomain)void navigate('Domains');}).catch(cause=>{
       setAuthorized(false);
       if(!(cause instanceof AccessError))fail(cause);
     });
@@ -153,6 +154,10 @@ function App(){
     setPage(next);setMobileNav(false);setCredential('');setError('');
     if(next==='Domains')await action(async()=>{
       setConnection(await api<CloudflareConnection>('/cloudflare'));
+      if(returningDomain&&new URLSearchParams(location.search).has('domainConnect')){
+        history.replaceState(null,'',location.pathname);
+        await checkCloudflare(returningDomain);
+      }
       await Promise.allSettled(domains.filter(item=>!cloudflare[item.name]).map(item=>checkCloudflare(item.name)));
     });
     if(next==='Integrations')await action(async()=>setIntegration(await api('/integrations')));
@@ -332,6 +337,11 @@ function App(){
               <p role="status">{check.applied?(item.verified?'DNS verified. Send a test email.':'Waiting for DNS. Letterdock will retry automatically.'):check.message}</p></>}
             </div>
             <div className="compact domain-actions">
+              {check?.detected&&!check.dns.txtVerified&&<button onClick={()=>void action(async()=>{
+                const result=await api<{available:boolean;url?:string;message?:string}>('/domains/'+encodeURIComponent(item.name)+'/domain-connect');
+                if(!result.available||!result.url)throw Error(result.message||'Cloudflare authorization is unavailable.');
+                location.assign(result.url);
+              })}>Authorize verification DNS <ArrowUpRight size={14}/></button>}
               <button className="primary" disabled={!check?.ready||Boolean(busy)||Boolean(check.applied)} onClick={()=>void action(()=>checkCloudflare(item.name,'POST'))}>Set up Cloudflare</button>
               <button onClick={()=>void action(async()=>{await api('/domains/'+item.name,'POST');await refresh();},'DNS verified')}>Verify DNS</button>
             </div>

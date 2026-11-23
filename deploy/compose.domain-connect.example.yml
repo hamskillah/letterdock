@@ -1,0 +1,9 @@
+services:
+  app:
+    environment:
+      DOMAIN_CONNECT_KEY_FILE: /run/secrets/domain_connect_key
+    secrets:
+      - domain_connect_key
+secrets:
+  domain_connect_key:
+    file: ${DOMAIN_CONNECT_SIGNING_KEY_PATH:?Set the host path to the private signing PEM}

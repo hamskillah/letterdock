@@ -1,0 +1,12 @@
+{
+  "providerId": "tokenhouse.site",
+  "providerName": "Letterdock",
+  "serviceId": "letterdock-verification",
+  "serviceName": "Verify receiving domain",
+  "version": 1,
+  "syncPubKeyDomain": "domainconnect.tokenhouse.site",
+  "syncRedirectDomain": "tokenhouse.site",
+  "records": [
+    { "type": "TXT", "host": "_letterdock", "data": "letterdock=%verification%", "ttl": 3600 }
+  ]
+}

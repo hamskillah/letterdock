@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { generateKeyPairSync, randomUUID, verify } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
 import { Resend } from 'resend';
+import { signedApplyUrl } from '../src/domain-connect.js';
 import { cloudflareToken, connectCloudflare } from '../src/cloudflare.js';
 import { db, migrate } from '../src/db.js';
 import { importMail, parseNext } from '../src/jobs.js';
@@ -19,6 +20,15 @@ const raw=Buffer.from([
   '--test', 'Content-Type: text/plain', 'Content-Disposition: attachment; filename="receipt.txt"',
   '', 'paid', '--test--', ''
 ].join('\r\n'));
+
+const signingKeys=generateKeyPairSync('rsa',{modulusLength:2048});
+const pem=signingKeys.privateKey.export({type:'pkcs8',format:'pem'}).toString();
+const apply=new URL(signedApplyUrl('provider.example',domain,id,origin+'/?domainConnect='+domain,pem));
+assert.equal(apply.hostname,'dash.cloudflare.com');
+assert.equal(apply.searchParams.get('domain'),domain);
+assert.equal(apply.searchParams.get('redirect_uri'),origin+'/?domainConnect='+domain);
+assert(verify('RSA-SHA256',Buffer.from(apply.search.slice(1).split('&key=')[0]),signingKeys.publicKey,
+  Buffer.from(apply.searchParams.get('sig')!,'base64')));
 
 await migrate();
 const server=spawn(process.execPath,['--import','tsx','src/server.ts'],{
