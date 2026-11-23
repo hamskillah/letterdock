@@ -106,7 +106,7 @@ async function execute(accessToken: string, input: RequestInput, upload?: {scrip
   const packet = JSON.parse(json);
   if (packet.error || packet.result?.isError) {
     const reported = JSON.stringify(packet.result?.content ?? packet.error);
-    const status = reported.match(/(?:401|403|404|409|5\d\d)/)?.[0];
+    const status = reported.match(/(?:400|401|403|404|409|422|5\d\d)/)?.[0];
     throw new Error(status ? 'Cloudflare action returned HTTP '+status : 'Cloudflare denied the action. Check the connection permissions.');
   }
   const data = resultEnvelope(packet.result?.structuredContent ?? packet.result?.content);

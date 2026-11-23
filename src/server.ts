@@ -227,7 +227,7 @@ app.route<{Params:{name:string}}>({
       return req.method==='POST'&&!result.ready ? res.code(409).send(result) : result;
     } catch(error) {
       if(error instanceof SetupConflict) return res.code(409).send({message:error.message});
-      const status=error instanceof Error ? error.message.match(/HTTP (401|403|404|409|5\d\d)/)?.[1] : undefined;
+      const status=error instanceof Error ? error.message.match(/HTTP (400|401|403|404|409|422|5\d\d)/)?.[1] : undefined;
       req.log.warn({status},'Cloudflare setup could not be completed');
       return res.code(502).send({message:status
         ? 'Cloudflare setup returned HTTP '+status+'. Check access to Email Routing, Workers and R2, then retry.'

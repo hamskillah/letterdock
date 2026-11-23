@@ -130,7 +130,8 @@ export async function domainSetup(name: string, token: string, apply = false) {
   if (apply) {
     if (!manualReady)worker=(await provisionIngress(zones[0].account.id)).worker;
     if (!txt.length) await request(base + '/dns_records', 'POST', { type: 'TXT', name: txtName, content: desiredTxt, ttl: 1 });
-    if (!routing.enabled) await request(base + '/email/routing/dns', 'POST', { name });
+    // Cloudflare interprets a supplied name as a subdomain; omit it for the zone apex.
+    if (!routing.enabled) await request(base + '/email/routing/dns', 'POST');
     if (!hasRule) await request(base + '/email/routing/rules/catch_all', 'PUT', {
       name: 'Letterdock', enabled: true, matchers: [{ type: 'all' }], actions: [{ type: 'worker', value: [worker] }]
     });
