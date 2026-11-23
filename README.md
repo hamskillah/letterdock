@@ -66,3 +66,15 @@ Restore the dump into an empty database with the same owner before starting the 
 Keep an encrypted copy of deployment secrets alongside the backup in protected storage.
 Before upgrading, take a fresh backup and keep the previous image. Build and start the new
 version via Compose, then check Health, send to a fresh address and verify the webhook.
+
+## Production checklist
+
+- Point the dashboard hostname to the VPS. Configure HTTPS on your reverse proxy.
+  See [the sample Caddyfile](deploy/Caddyfile.example). Caddy's default certificate
+  setup requires public access to HTTP or HTTPS for domain validation.
+- Set `PUBLIC_URL` to the exact public HTTPS origin. The origin must match requests
+  from the browser for authenticated changes.
+- Keep PostgreSQL and the application port private. The sample Compose file binds
+  the app to loopback and has no published database port.
+- Use separate test domains for inbound validation. Confirm DNS ownership, catch-all
+  routing, an external test message, and inbox visibility before switching any live MX.
