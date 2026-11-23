@@ -52,9 +52,11 @@ try {
   const headers={cookie,origin,'content-type':'application/json'};
   const preflight=await fetch(origin+'/api/domains/'+domain+'/cloudflare',{headers}).then(response=>response.json());
   assert.equal(preflight.ready,false);
-  assert.match(preflight.message,/requires a server-side Cloudflare token/);
+  assert.match(preflight.message,/uses another DNS provider/);
   const refused=await fetch(origin+'/api/domains/'+domain+'/cloudflare',{method:'POST',headers,body:'{}'});
   assert.equal(refused.status,409);
+  const unsignedApply=await fetch(origin+'/api/cloudflare/oauth/apply',{method:'POST',headers,body:JSON.stringify({name:domain})});
+  assert.equal(unsignedApply.status,403);
   const inboxes=await fetch(origin+'/api/inboxes',{headers}).then(response=>response.json());
   assert.equal(inboxes.filter((row:{address:string})=>row.address===recipient).length,1);
   const record=await fetch(origin+'/api/messages/'+id,{headers}).then(response=>response.json());
@@ -93,6 +95,10 @@ try {
       await page.getByRole('button',{name:'Domains',exact:true}).click();
       await page.getByRole('heading',{name:'Domains',exact:true}).waitFor();
       await page.getByRole('heading',{name:'DNS records'}).first().waitFor();
+      const card=page.getByRole('heading',{name:domain,exact:true}).locator('xpath=ancestor::section[1]');
+      await card.getByRole('button',{name:'Set up domain'}).click();
+      await card.getByText(/uses another DNS provider/).waitFor();
+      await card.locator('details[open]').waitFor();
       if(size.width===390){
         await page.getByRole('button',{name:'Remove '+domain}).click();
         await page.getByRole('dialog').getByRole('button',{name:'Remove domain'}).click();

@@ -6,7 +6,7 @@ import './style.css';
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
 type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;error:string;attachments:{id:string;filename:string;mime:string;bytes:number}[]};
 type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null};
-type CloudflareConnection = {oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
+type CloudflareConnection = {canProvision:boolean;oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
 type Address = {address:string;name:string;pinned:boolean};
 type Integration = {keys:{id:string;name:string}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
@@ -23,6 +23,7 @@ async function api<T>(path:string, method='GET', data?:unknown): Promise<T> {
 const when=(value:string)=>new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(value));
 const returningDomain = new URLSearchParams(location.search).get('domainConnect');
 const cloudflareReturn = new URLSearchParams(location.search).get('cloudflare');
+const setupDomain = new URLSearchParams(location.search).get('setupDomain');
 const blankFilters={from:'',to:'',subject:'',label:'',since:'',until:'',attachment:''};
 const logo=<img className="brand-mark" src="/letterdock.svg" width="36" height="36" alt=""/>;
 
@@ -38,6 +39,7 @@ function App(){
   const [connection,setConnection]=useState<CloudflareConnection|null>(null);
   const [connecting,setConnecting]=useState(false);
   const [cloudflare,setCloudflare]=useState<Record<string,CloudflareStatus>>({});
+  const [manualDomain,setManualDomain]=useState('');
   const [removing,setRemoving]=useState<string|null>(null);
   const [domainBusy,setDomainBusy]=useState<Record<string,string>>({});
   const [domains,setDomains]=useState<Domain[]>([]);
@@ -69,8 +71,18 @@ function App(){
     try {
       const status=await api<CloudflareStatus>('/domains/'+encodeURIComponent(name)+'/cloudflare',method);
       setCloudflare(previous=>({...previous,[name]:{...status,applied:method==='POST'||previous[name]?.applied}}));
+      return status;
     } finally {
       setDomainBusy(previous=>({...previous,[name]:''}));
+    }
+  }
+  async function setupDomainFromDashboard(name:string){
+    const check=await checkCloudflare(name);
+    if(!check.detected){setManualDomain(name);return;}
+    if(check.ready){await checkCloudflare(name,'POST');return;}
+    if(check.message.startsWith('Connect or reconnect')){
+      const {url}=await api<{url:string}>('/cloudflare/oauth/start','POST',{domain:name});
+      location.assign(url);
     }
   }
   async function directory(){
@@ -158,6 +170,11 @@ function App(){
       if(cloudflareReturn&&new URLSearchParams(location.search).has('cloudflare')){
         history.replaceState(null,'',location.pathname);
         if(cloudflareReturn==='authorization-failed') throw Error('Cloudflare authorization failed or was canceled. Try connecting again.');
+        if(setupDomain) {
+          const status=await api<CloudflareStatus>('/cloudflare/oauth/apply','POST',{name:setupDomain});
+          setCloudflare(previous=>({...previous,[setupDomain]:{...status,applied:true}}));
+          setConnection(await api<CloudflareConnection>('/cloudflare'));
+        }
       }
       if(returningDomain&&new URLSearchParams(location.search).has('domainConnect')){
         history.replaceState(null,'',location.pathname);
@@ -330,7 +347,7 @@ function App(){
               },'Cloudflare disconnected')}>Disconnect</button>}
             </form>
           </details>}
-          {(!connection.workerConfigured||!connection.stagingConfigured)&&<p className="setup-hint">Deploy the Worker and configure R2 once on the server. <a href="https://github.com/hamskillah/letterdock#receive-mail" target="_blank" rel="noreferrer">Deployment guide</a></p>}
+          {(!connection.workerConfigured||!connection.stagingConfigured)&&<p className="setup-hint">Cloudflare domains can provision a Worker and R2 automatically during setup. <a href="https://github.com/hamskillah/letterdock#receive-mail" target="_blank" rel="noreferrer">Deployment guide</a></p>}
         </section>}
         <form className="settings-form domain-add" onSubmit={e=>submit(e,async data=>{
           const {name}=await api<{name:string}>('/domains','POST',{name:data.get('name')});
@@ -360,11 +377,11 @@ function App(){
                 if(!result.available||!result.url)throw Error(result.message||'Cloudflare authorization is unavailable.');
                 location.assign(result.url);
               })}>Authorize verification DNS <ArrowUpRight size={14}/></button>}
-              <button className="primary" disabled={!check?.ready||Boolean(busy)||Boolean(check.applied)} onClick={()=>void action(()=>checkCloudflare(item.name,'POST'))}>Set up Cloudflare</button>
+              <button className="primary" disabled={Boolean(busy)||Boolean(check?.applied)} onClick={()=>void action(()=>setupDomainFromDashboard(item.name))}>Set up domain</button>
               <button onClick={()=>void action(async()=>{await api('/domains/'+item.name,'POST');await refresh();},'DNS verified')}>Verify DNS</button>
             </div>
-            <details><summary>Manual setup and retention</summary>
-              <ol><li>Add TXT <code>_letterdock.{item.name}</code> with value <code>letterdock={item.token}</code>.</li><li>Enable Email Routing in Cloudflare and point the catch-all to your Letterdock Worker.</li><li>Verify DNS, then send a test email.</li></ol>
+            <details open={manualDomain===item.name||undefined}><summary>Manual setup and retention</summary>
+              <ol><li>Add TXT <code>_letterdock.{item.name}</code> with value <code>letterdock={item.token}</code>.</li><li>Configure an inbound route with your DNS and mail provider. This installation can verify Cloudflare Email Routing MX records.</li><li>Verify DNS, then send a test email.</li></ol>
               {item.last_received&&<p>Last received {when(item.last_received)}</p>}
               <form className="settings-form" onSubmit={e=>submit(e,data=>api('/domains/'+item.name,'POST',{retention:data.get('days')?Number(data.get('days')):null}))}><label>Retention days<input name="days" type="number" min="1" max="3650" defaultValue={item.retention_days??''} placeholder="Keep indefinitely"/></label><button>Save</button></form>
             </details>

@@ -5,6 +5,7 @@ import { BlockList } from 'node:net';
 import { S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { simpleParser } from 'mailparser';
 import sanitize from 'sanitize-html';
+import { managedIngress } from './cloudflare-ingress.js';
 import { db } from './db.js';
 
 const bucket = process.env.R2_BUCKET;
@@ -37,9 +38,44 @@ export const stagingStatus = {
   error: false
 };
 let continuation: string | undefined;
+let workerCursor: string | null = null;
+
+async function pullManaged() {
+  const ingress=await managedIngress();
+  if(!ingress?.url)return;
+  stagingStatus.configured=true;
+  const headers={ Authorization:'Bearer '+ingress.secret };
+  const get=(path:string,method='GET')=>fetch(ingress.url+path,{
+    method,headers,redirect:'error',signal:AbortSignal.timeout(20000)
+  });
+  const response=await get('/mail'+(workerCursor?'?cursor='+encodeURIComponent(workerCursor):''));
+  if(!response.ok){workerCursor=null;throw Error('Staging list failed: '+response.status);}
+  const page=await response.json() as {keys:string[];cursor:string|null};
+  stagingStatus.lastChecked=new Date().toISOString();
+  stagingStatus.moreWaiting=Boolean(page.cursor);
+  stagingStatus.error=false;
+  workerCursor=page.cursor;
+  for(const key of page.keys){
+    if(!/^mail\/[0-9a-f-]{36}$/.test(key))continue;
+    try {
+      const item=await get('/'+key);
+      if(item.status===404)continue;
+      const to=item.headers.get('x-letterdock-to');
+      const from=item.headers.get('x-letterdock-from');
+      if(!item.ok||!to||from===null)throw Error('Staging message could not be read');
+      const recipient=decodeURIComponent(to);
+      const name=recipient.split('@').at(-1)?.toLowerCase();
+      const state=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[name]);
+      if(state.rows[0]&&!state.rows[0].verified&&!state.rows[0].removed_at){await item.body?.cancel();continue;}
+      await importMail(key.slice(5),decodeURIComponent(from),recipient,new Uint8Array(await item.arrayBuffer()));
+      const deleted=await get('/'+key,'DELETE');
+      if(!deleted.ok)throw Error('Staging acknowledgement failed');
+    } catch(error){stagingStatus.error=true;console.error('Managed import failed',key,error);}
+  }
+}
 
 async function pull() {
-  if (!s3 || !bucket) return;
+  if (!s3 || !bucket) return pullManaged();
   const page = await s3.send(new ListObjectsV2Command({
     Bucket: bucket, Prefix: 'mail/', MaxKeys: 25, ContinuationToken: continuation
   }));

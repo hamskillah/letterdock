@@ -5,7 +5,7 @@ import { resolveMx, resolveNs, resolveTxt } from 'node:dns/promises';
 type Action = { type: string; value?: string[] };
 type CatchAll = { enabled: boolean; actions: Action[]; source?: string };
 type DnsRecord = { type: string; name: string; content: string };
-type Zone = { id: string; status: string };
+type Zone = { id: string; status: string; account: { id: string } };
 export class SetupConflict extends Error {}
 
 const routingMx = /^route[1-3]\.mx\.cloudflare\.net\.?$/i;
@@ -60,13 +60,16 @@ export async function connectCloudflare(token: string) {
 }
 
 export async function connectionStatus() {
+  const ingress=await (await import('./cloudflare-ingress.js')).managedIngress();
+  const oauth=await (await import('./cloudflare-oauth.js')).oauthCapabilities();
   return {
+    canProvision: oauth,
     oauthConnected: Boolean(await readCredential('cloudflare_oauth')),
     configured: Boolean(await readCredential('cloudflare_oauth') || await cloudflareToken()),
     fromEnvironment: Boolean(process.env.CLOUDFLARE_API_TOKEN),
-    workerConfigured: Boolean(process.env.CLOUDFLARE_EMAIL_WORKER),
-    stagingConfigured: Boolean(process.env.R2_BUCKET && process.env.R2_ENDPOINT
-      && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY)
+    workerConfigured: Boolean(ingress?.url || process.env.CLOUDFLARE_EMAIL_WORKER),
+    stagingConfigured: Boolean(ingress?.url || (process.env.R2_BUCKET && process.env.R2_ENDPOINT
+      && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY))
   };
 }
 
@@ -86,15 +89,20 @@ export async function domainSetup(name: string, token: string, apply = false) {
   const result = (ready: boolean, message: string) => ({ detected, ready, message, dns });
   const externalMx = dns.mx.filter(host => !routingMx.test(host));
   if (externalMx.length) return result(false, 'Existing mail service detected. MX has been preserved.');
-  const worker = process.env.CLOUDFLARE_EMAIL_WORKER;
+  if (!detected) return result(false, 'This domain uses another DNS provider. Use the manual setup below.');
+  let worker = process.env.CLOUDFLARE_EMAIL_WORKER;
   const apiToken = await cloudflareToken();
   const oauth = await readCredential('cloudflare_oauth');
-  if ((!apiToken && !oauth) || !worker || !process.env.R2_BUCKET || !process.env.R2_ENDPOINT
-    || !process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
-    return result(false, 'Automatic setup requires a server-side Cloudflare token, Email Worker and R2 staging.');
+  const { mcpRequest, oauthCapabilities } = await import('./cloudflare-oauth.js');
+  const { managedIngress, provisionIngress } = await import('./cloudflare-ingress.js');
+  const manualReady = worker && process.env.R2_BUCKET && process.env.R2_ENDPOINT
+    && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY;
+  const ingress = await managedIngress();
+  if(!manualReady)worker=ingress?.worker;
+  const canProvision = Boolean(oauth && (ingress?.url || await oauthCapabilities()));
+  if ((!apiToken && !oauth) || (!manualReady && !canProvision)) {
+    return result(false, 'Connect or reconnect Cloudflare to authorize Email Routing, Worker and R2 setup.');
   }
-
-  const { mcpRequest } = await import('./cloudflare-oauth.js');
   const request = <T>(path: string, method?: string, body?: unknown) =>
     oauth ? mcpRequest<T>(path, method, body) : cloudflare<T>(apiToken!, path, method, body);
 
@@ -102,6 +110,8 @@ export async function domainSetup(name: string, token: string, apply = false) {
   const zones = await request<Zone[]>('/zones?' + params);
   if (zones.length !== 1) return result(false, 'An active Cloudflare apex zone with token access is required.');
   const base = '/zones/' + zones[0].id;
+  if (!manualReady && ingress?.account && ingress.account!==zones[0].account.id)
+    throw new SetupConflict('Select a zone in the Cloudflare account connected to this Letterdock installation.');
   const [mx, txt, routing, rule] = await Promise.all([
     request<DnsRecord[]>(base + '/dns_records?' + new URLSearchParams({ type: 'MX', name })),
     request<DnsRecord[]>(base + '/dns_records?' + new URLSearchParams({ type: 'TXT', name: txtName })),
@@ -118,6 +128,7 @@ export async function domainSetup(name: string, token: string, apply = false) {
     throw new SetupConflict('An existing catch-all rule must be preserved.');
   }
   if (apply) {
+    if (!manualReady)worker=(await provisionIngress(zones[0].account.id)).worker;
     if (!txt.length) await request(base + '/dns_records', 'POST', { type: 'TXT', name: txtName, content: desiredTxt, ttl: 1 });
     if (!routing.enabled) await request(base + '/email/routing/dns', 'POST', { name });
     if (!hasRule) await request(base + '/email/routing/rules/catch_all', 'PUT', {
@@ -126,5 +137,5 @@ export async function domainSetup(name: string, token: string, apply = false) {
   }
   return result(true, apply
     ? 'Cloudflare configured. Verify DNS once changes propagate, then send a test email.'
-    : 'Ready to add verification TXT, enable Email Routing and connect catch-all to ' + worker + '.');
+    : 'Ready to configure Email Routing, MX and catch-all.');
 }

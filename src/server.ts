@@ -113,13 +113,17 @@ app.get<{Params:{id:string}}>('/api/files/:id',async(req,res)=>{
   if(!row) return res.code(404).send();
   return res.header('Content-Disposition',safeName(row.filename)).type('application/octet-stream').send(row.data);
 });
-app.post('/api/cloudflare/oauth/start', async (_req,res) => {
+app.post<{Body:{domain?:string}}>('/api/cloudflare/oauth/start', async (req,res) => {
   try {
     const origin = new URL(process.env.PUBLIC_URL!);
     if (origin.protocol!=='https:' && !['127.0.0.1','localhost'].includes(origin.hostname)) {
       return res.code(400).send({message:'Use localhost or HTTPS for Cloudflare authorization.'});
     }
-    const {pending,url}=await startOAuth(new URL('/oauth/cloudflare/callback',origin).href);
+    const name=req.body?.domain;
+    if (name && !(await db.query('SELECT 1 FROM domains WHERE name=$1 AND removed_at IS NULL',[name])).rowCount) {
+      return res.code(404).send({message:'Domain not found'});
+    }
+    const {pending,url}=await startOAuth(new URL('/oauth/cloudflare/callback',origin).href,name);
     res.setCookie('cf_pending',JSON.stringify(pending),{
       signed:true,httpOnly:true,sameSite:'lax',secure:origin.protocol==='https:',
       path:'/oauth/cloudflare/callback',maxAge:600
@@ -136,9 +140,28 @@ app.get<{Querystring:{code?:string;state?:string;iss?:string}}>('/oauth/cloudfla
     const pending=JSON.parse(state.value) as OAuthState;
     if(Date.now()>pending.expires || req.query.state!==pending.state || req.query.iss!=='https://mcp.cloudflare.com' || !req.query.code) throw Error();
     await completeOAuth(pending,req.query.code);
-    return res.redirect('/?cloudflare=connected',303);
+    if(pending.domain)res.setCookie('cf_apply',JSON.stringify({name:pending.domain,expires:Date.now()+120000}),{
+      signed:true,httpOnly:true,sameSite:'lax',secure:new URL(pending.redirect).protocol==='https:',
+      path:'/api/cloudflare/oauth/apply',maxAge:120
+    });
+    return res.redirect('/?cloudflare=connected'+(pending.domain?'&setupDomain='+encodeURIComponent(pending.domain):''),303);
   } catch {
     return res.redirect('/?cloudflare=authorization-failed',303);
+  }
+});
+app.post<{Body:{name:string}}>('/api/cloudflare/oauth/apply',async(req,res)=>{
+  const ticket=req.unsignCookie(req.cookies.cf_apply??'');
+  res.clearCookie('cf_apply',{path:'/api/cloudflare/oauth/apply'});
+  if(!ticket.valid||!ticket.value)return res.code(403).send({message:'Start setup from the domain card.'});
+  const pending=JSON.parse(ticket.value) as {name:string;expires:number};
+  if(Date.now()>pending.expires||pending.name!==req.body?.name)return res.code(403).send({message:'Setup approval expired. Retry from the domain card.'});
+  const {rows:[domain]}=await db.query('SELECT name,token FROM domains WHERE name=$1 AND removed_at IS NULL',[pending.name]);
+  if(!domain)return res.code(404).send({message:'Domain not found'});
+  try {
+    const result=await domainSetup(domain.name,domain.token,true);
+    return result.ready?result:res.code(409).send(result);
+  } catch(error) {
+    return res.code(502).send({message:error instanceof SetupConflict ? error.message : 'Cloudflare setup failed. Retry from the domain card.'});
   }
 });
 app.get('/api/cloudflare', async () => connectionStatus());
@@ -204,8 +227,11 @@ app.route<{Params:{name:string}}>({
       return req.method==='POST'&&!result.ready ? res.code(409).send(result) : result;
     } catch(error) {
       if(error instanceof SetupConflict) return res.code(409).send({message:error.message});
-      req.log.warn('Cloudflare setup could not be checked');
-      return res.code(502).send({message:'Cloudflare or DNS could not be reached. Try again.'});
+      const status=error instanceof Error ? error.message.match(/HTTP (401|403|404|409|5\d\d)/)?.[1] : undefined;
+      req.log.warn({status},'Cloudflare setup could not be completed');
+      return res.code(502).send({message:status
+        ? 'Cloudflare setup returned HTTP '+status+'. Check access to Email Routing, Workers and R2, then retry.'
+        : 'Cloudflare or DNS could not complete setup. Try again.'});
     }
   }
 });

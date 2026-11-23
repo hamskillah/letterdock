@@ -5,11 +5,12 @@ const issuer = 'https://mcp.cloudflare.com';
 const resource = issuer + '/mcp';
 const scopes = [
   'account:read', 'zone.read', 'dns.read', 'dns.write', 'zone-settings.read', 'zone-settings.write',
-  'email-routing-rule.read', 'email-routing-rule.write', 'offline_access'
+  'email-routing-rule.read', 'email-routing-rule.write', 'workers-scripts.read', 'workers-scripts.write',
+  'workers-r2.read', 'workers-r2.write', 'offline_access'
 ];
 
-export type OAuthState = { client: string; state: string; verifier: string; redirect: string; expires: number };
-type Credential = { client: string; access: string; refresh?: string; expires: number };
+export type OAuthState = { client: string; state: string; verifier: string; redirect: string; expires: number; domain?: string };
+type Credential = { client: string; access: string; refresh?: string; expires: number; scopes?: string[] };
 
 async function post(path: string, body: string | URLSearchParams, type: string) {
   const response = await fetch(issuer + path, {
@@ -20,7 +21,7 @@ async function post(path: string, body: string | URLSearchParams, type: string) 
   return response.json();
 }
 
-export async function startOAuth(redirect: string) {
+export async function startOAuth(redirect: string, domain?: string) {
   const registration = await post('/register', JSON.stringify({
     client_name: 'Letterdock', redirect_uris: [redirect],
     grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none'
@@ -29,7 +30,7 @@ export async function startOAuth(redirect: string) {
 
   const pending: OAuthState = {
     client: registration.client_id, state: randomBytes(24).toString('base64url'),
-    verifier: randomBytes(32).toString('base64url'), redirect, expires: Date.now() + 600000
+    verifier: randomBytes(32).toString('base64url'), redirect, expires: Date.now() + 600000, domain
   };
   const url = new URL('/authorize', issuer);
   url.search = new URLSearchParams({
@@ -40,13 +41,14 @@ export async function startOAuth(redirect: string) {
   return { pending, url: url.href };
 }
 
-async function exchange(client: string, values: Record<string,string>, previousRefresh?: string) {
+async function exchange(client: string, values: Record<string,string>, previous?: Credential) {
   const result = await post('/token', new URLSearchParams({
     client_id: client, resource, ...values
   }), 'application/x-www-form-urlencoded');
   if (typeof result.access_token !== 'string') throw new Error('Missing Cloudflare access token');
   return {
-    client, access: result.access_token, refresh: result.refresh_token || previousRefresh,
+    client, access: result.access_token, refresh: result.refresh_token || previous?.refresh,
+    scopes: typeof result.scope==='string' ? result.scope.split(' ') : previous?.scopes,
     expires: Date.now() + (Number(result.expires_in) || 3600)*1000
   } satisfies Credential;
 }
@@ -66,7 +68,7 @@ async function activeCredential() {
   const saved = JSON.parse(value) as Credential;
   if (saved.expires > Date.now() + 60000) return saved;
   if (!saved.refresh) throw new Error('Cloudflare authorization expired. Reconnect Cloudflare.');
-  refreshing ??= exchange(saved.client, { grant_type:'refresh_token', refresh_token:saved.refresh },saved.refresh)
+  refreshing ??= exchange(saved.client, { grant_type:'refresh_token', refresh_token:saved.refresh },saved)
     .then(async credential => {
       if (await readCredential('cloudflare_oauth') === value) await saveCredential('cloudflare_oauth',JSON.stringify(credential));
       return credential;
@@ -83,13 +85,16 @@ function resultEnvelope(input: unknown): { success?: boolean; result?: unknown }
   return input as { success?: boolean; result?: unknown };
 }
 
-async function execute(accessToken: string, input: RequestInput) {
+async function execute(accessToken: string, input: RequestInput, upload?: {script: string; metadata: object}) {
+  const request = upload
+    ? 'async () => { const upload='+JSON.stringify(upload)+';const body=new FormData();body.append(\'metadata\',new Blob([JSON.stringify(upload.metadata)],{type:\'application/json\'}));body.append(\'worker.js\',new Blob([upload.script],{type:\'application/javascript+module\'}),\'worker.js\');return cloudflare.request({...'+JSON.stringify(input)+',body}); }'
+    : 'async () => cloudflare.request('+JSON.stringify(input)+')';
   const response = await fetch(resource, {
     method:'POST', headers:{
       Authorization:'Bearer '+accessToken, 'Content-Type':'application/json', Accept:'application/json, text/event-stream'
     },
     body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{
-      name:'execute', arguments:{code:'async () => cloudflare.request('+JSON.stringify(input)+')'}
+      name:'execute', arguments:{code:request}
     }}), redirect:'error', signal:AbortSignal.timeout(20000)
   });
   if (!response.ok) throw new Error('Cloudflare connection failed (HTTP '+response.status+'). Reconnect Cloudflare.');
@@ -99,7 +104,11 @@ async function execute(accessToken: string, input: RequestInput) {
     : raw;
   if (!json) throw new Error('Cloudflare did not return a response');
   const packet = JSON.parse(json);
-  if (packet.error || packet.result?.isError) throw new Error('Cloudflare denied the action or the required permissions are missing.');
+  if (packet.error || packet.result?.isError) {
+    const reported = JSON.stringify(packet.result?.content ?? packet.error);
+    const status = reported.match(/(?:401|403|404|409|5\d\d)/)?.[0];
+    throw new Error(status ? 'Cloudflare action returned HTTP '+status : 'Cloudflare denied the action. Check the connection permissions.');
+  }
   const data = resultEnvelope(packet.result?.structuredContent ?? packet.result?.content);
   if (!data?.success) throw new Error('Cloudflare could not complete the request.');
   return data.result;
@@ -109,4 +118,16 @@ export async function mcpRequest<T>(path: string, method = 'GET', body?: unknown
   const url = new URL(path,'https://api.cloudflare.com');
   const {access} = await activeCredential();
   return await execute(access,{method,path:url.pathname,query:Object.fromEntries(url.searchParams),body}) as T;
+}
+
+export async function uploadWorker(path: string, script: string, metadata: object) {
+  const {access}=await activeCredential();
+  return execute(access,{method:'PUT',path},{script,metadata});
+}
+
+export async function oauthCapabilities() {
+  const value = await readCredential('cloudflare_oauth');
+  if(!value)return false;
+  const granted=(JSON.parse(value) as Credential).scopes??[];
+  return ['workers-scripts.write','workers-r2.write'].every(scope=>granted.includes(scope));
 }
