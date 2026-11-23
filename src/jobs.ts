@@ -223,15 +223,31 @@ async function deliver() {
   finally { client.release(); }
 }
 
+async function applyRetention() {
+  await db.query(`
+    WITH eligible AS (
+      SELECT m.id FROM messages m JOIN domains d ON d.name=m.domain
+      WHERE d.removed_at IS NULL AND d.prune_days IS NOT NULL
+        AND m.received < now()-make_interval(days => d.prune_days)
+      ORDER BY m.received, m.id
+      LIMIT 100
+      FOR SHARE OF d SKIP LOCKED
+      FOR UPDATE OF m SKIP LOCKED
+    )
+    DELETE FROM messages m USING eligible WHERE m.id=eligible.id
+  `);
+  await db.query(`UPDATE messages m SET folder='trash' FROM domains d
+    WHERE m.domain=d.name AND d.retention_days IS NOT NULL AND m.folder<>'trash'
+    AND m.received < now()-make_interval(days => d.retention_days)`);
+}
+
 export async function runJobs() {
   await Promise.allSettled([
     pull().catch(error => { stagingStatus.error = true; continuation = undefined; throw error; }),
     (async () => { for (let n=0; n<25 && await parseNext(); n++) { /* drain bounded batch */ } })(),
     deliver(),
     db.query("DELETE FROM ingest_log WHERE time < now()-interval '30 days' AND status <> 'stored'"),
-    db.query(`UPDATE messages m SET folder='trash' FROM domains d
-      WHERE m.domain=d.name AND d.retention_days IS NOT NULL AND m.folder<>'trash'
-      AND m.received < now()-make_interval(days => d.retention_days)`)
+    applyRetention()
   ]).then(results => results.forEach(result => {
     if (result.status === 'rejected') console.error('Background job failed', result.reason);
   }));

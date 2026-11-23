@@ -248,3 +248,7 @@ button,.button {transition:background-color 120ms ease,color 120ms ease,border-c
   .sidebar button {min-height:42px}
   .topbar .icon,.reader-actions .mobile {min-width:42px;min-height:42px}
 }
+
+.prune-settings .settings-form{margin-top:12px}
+dialog:modal{overscroll-behavior:contain}
+dialog::backdrop{overflow:hidden;overscroll-behavior:contain}

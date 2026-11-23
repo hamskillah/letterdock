@@ -110,6 +110,34 @@ try {
   const oversized=randomUUID();
   await importMail(oversized,'sender@example.net',recipient,new Uint8Array(20*1024**2+1));
   assert.equal((await db.query('SELECT status FROM ingest_log WHERE id=$1',[oversized])).rows[0].status,'message_too_large');
+  const pruneDomain='prune-'+id+'.integration.example';
+  await db.query('INSERT INTO domains(name,verified) VALUES($1,true)',[pruneDomain]);
+  const oldMail=randomUUID(), freshMail=randomUUID(), unrelatedMail=randomUUID();
+  await db.query(`INSERT INTO messages(id,domain,recipient,sender,raw,received,folder,state) VALUES
+    ($1,$4,'old@'||$4,'sender@example.net',$6,now()-interval '31 days','trash','ready'),
+    ($2,$4,'fresh@'||$4,'sender@example.net',$6,now(),'inbox','ready'),
+    ($3,$5,'old@'||$5,'sender@example.net',$6,now()-interval '31 days','archive','ready')`,
+    [oldMail,freshMail,unrelatedMail,pruneDomain,scopedDomain,raw]);
+  await db.query("INSERT INTO attachments(message,filename,mime,data) VALUES($1,'fixture.txt','text/plain',$2)",[oldMail,raw]);
+  const savePrune=(days:unknown)=>fetch(origin+'/api/domains/'+pruneDomain+'/auto-prune',{
+    method:'PATCH',headers,body:JSON.stringify({days})
+  });
+  try {
+    assert.equal((await savePrune(0)).status,400);
+    assert.equal((await savePrune(30)).status,200);
+    assert.equal((await fetch(origin+'/api/domains',{headers}).then(r=>r.json())).find((d:{name:string})=>d.name===pruneDomain).prune_days,30);
+    for(let attempt=0;attempt<70;attempt++){
+      if(!(await db.query('SELECT 1 FROM messages WHERE id=$1',[oldMail])).rowCount)break;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    assert.equal((await db.query('SELECT 1 FROM messages WHERE id=$1',[oldMail])).rowCount,0);
+    assert.equal((await db.query('SELECT 1 FROM attachments WHERE message=$1',[oldMail])).rowCount,0);
+    assert.equal((await db.query('SELECT 1 FROM messages WHERE id IN ($1,$2)',[freshMail,unrelatedMail])).rowCount,2);
+    assert.equal((await savePrune(null)).status,200);
+  } finally {
+    await db.query('DELETE FROM messages WHERE id IN ($1,$2,$3)',[oldMail,freshMail,unrelatedMail]);
+    await db.query('DELETE FROM domains WHERE name=$1',[pruneDomain]);
+  }
   const browser=await chromium.launch();
   try {
     for(const size of [{width:1440,height:900},{width:390,height:844}]){
@@ -142,6 +170,18 @@ try {
       await card.getByRole('button',{name:'Set up domain'}).click();
       await card.getByText(/uses another DNS provider/).waitFor();
       await card.locator('details[open]').waitFor();
+      const off=card.getByText('Auto-prune · Off',{exact:true});
+      await off.click();
+      await card.getByRole('spinbutton',{name:'Delete email older than (days)'}).fill('3650');
+      await card.getByRole('button',{name:'Review schedule'}).click();
+      const pruneDialog=page.getByRole('dialog',{name:'Enable auto-prune?'});
+      await pruneDialog.getByRole('button',{name:'Cancel'}).click();
+      await off.waitFor();
+      await card.getByRole('button',{name:'Review schedule'}).click();
+      await pruneDialog.getByRole('button',{name:'Confirm auto-prune'}).click();
+      await card.getByText('Auto-prune · After 3650 days',{exact:true}).waitFor();
+      await card.getByRole('button',{name:'Turn off'}).click();
+      await off.waitFor();
       if(size.width===390){
         await page.getByRole('button',{name:'Remove '+domain}).click();
         await page.getByRole('dialog').getByRole('button',{name:'Remove domain'}).click();
@@ -192,6 +232,7 @@ try {
   assert.equal(disconnect.status,200);
   assert.equal(await cloudflareToken(),undefined);
   console.log('Passed: desktop/mobile navigation, login, search, reader and domain view');
+  console.log('Passed: auto-prune policy, scheduled cleanup, attachment cascade, domain isolation, and confirmation UI');
   console.log('Passed: catch-all, duplicate ingest, BCC, sanitization, labels/search, SDK and attachment download');
 } finally {
   server.kill();

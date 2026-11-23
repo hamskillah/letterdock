@@ -5,7 +5,7 @@ import './style.css';
 
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
 type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;error:string;attachments:{id:string;filename:string;mime:string;bytes:number}[]};
-type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null};
+type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null;prune_days:number|null};
 type CloudflareConnection = {canProvision:boolean;oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
 type Address = {address:string;name:string;pinned:boolean;unread:number};
@@ -40,6 +40,7 @@ function App(){
   const [connecting,setConnecting]=useState(false);
   const [cloudflare,setCloudflare]=useState<Record<string,CloudflareStatus>>({});
   const [manualDomain,setManualDomain]=useState('');
+  const [pruning,setPruning]=useState<{name:string;days:number}|null>(null);
   const [removing,setRemoving]=useState<string|null>(null);
   const [domainBusy,setDomainBusy]=useState<Record<string,string>>({});
   const [domains,setDomains]=useState<Domain[]>([]);
@@ -224,6 +225,10 @@ function App(){
         setMessages(rows=>rows.map(row=>row.id===message.id?{...row,unread:false}:row));
       }
     });
+  }
+  async function savePrune(name:string,days:number|null){
+    await api('/domains/'+encodeURIComponent(name)+'/auto-prune','PATCH',{days});
+    setDomains(rows=>rows.map(item=>item.name===name?{...item,prune_days:days}:item));
   }
   async function update(ids:string[], patch:Record<string,unknown>){
     await action(async()=>{
@@ -451,10 +456,23 @@ function App(){
               <button className="primary" disabled={Boolean(busy)||Boolean(check?.applied)} onClick={()=>void action(()=>setupDomainFromDashboard(item.name))}>Set up domain</button>
               <button onClick={()=>void action(async()=>{await api('/domains/'+item.name,'POST');await refresh();},'DNS verified')}>Verify DNS</button>
             </div>
+            <details className="prune-settings">
+              <summary>Auto-prune · {item.prune_days===null?'Off':`After ${item.prune_days} days`}</summary>
+              <p>Permanently deletes older email and attachments across all folders for this domain.</p>
+              <form className="settings-form" onSubmit={event=>{
+                event.preventDefault();
+                const days=Number(new FormData(event.currentTarget).get('days'));
+                if(days!==item.prune_days)setPruning({name:item.name,days});
+              }}>
+                <label>Delete email older than (days)<input key={item.prune_days??'off'} type="number" name="days" min="1" max="3650" defaultValue={item.prune_days??''} placeholder="30" required/></label>
+                <button>Review schedule</button>
+                {item.prune_days!==null&&<button type="button" onClick={()=>void action(()=>savePrune(item.name,null),'Auto-prune turned off')}>Turn off</button>}
+              </form>
+            </details>
             <details open={manualDomain===item.name||undefined}><summary>Manual setup and retention</summary>
               <ol><li>Add TXT <code>_letterdock.{item.name}</code> with value <code>letterdock={item.token}</code>.</li><li>Configure an inbound route with your DNS and mail provider. This installation can verify Cloudflare Email Routing MX records.</li><li>Verify DNS, then send a test email.</li></ol>
               {item.last_received&&<p>Last received {when(item.last_received)}</p>}
-              <form className="settings-form" onSubmit={e=>submit(e,data=>api('/domains/'+item.name,'POST',{retention:data.get('days')?Number(data.get('days')):null}))}><label>Retention days<input name="days" type="number" min="1" max="3650" defaultValue={item.retention_days??''} placeholder="Keep indefinitely"/></label><button>Save</button></form>
+              <form className="settings-form" onSubmit={e=>submit(e,data=>api('/domains/'+item.name,'POST',{retention:data.get('days')?Number(data.get('days')):null}))}><label>Move to Trash after (days)<input name="days" type="number" min="1" max="3650" defaultValue={item.retention_days??''} placeholder="Keep indefinitely"/></label><button>Save</button></form>
             </details>
           </section>;
         })}
@@ -487,6 +505,21 @@ function App(){
         {blocks.map(item=><div className="settings-row compact" key={item.sender}><span>{item.sender}</span><button onClick={()=>void action(async()=>{await api('/blocks','POST',{sender:item.sender,remove:true});await refresh();})}>Unblock</button></div>)}
       </section>}
     </main>
+    {pruning&&<dialog className="remove-dialog" aria-labelledby="prune-title" aria-describedby="prune-description"
+      ref={element=>{if(element&&!element.open)element.showModal();}} onClose={event=>{
+        const dialog=event.currentTarget;
+        const confirmed=dialog.returnValue==='confirm';
+        dialog.returnValue='';
+        setPruning(null);
+        if(confirmed)void action(()=>savePrune(pruning.name,pruning.days),'Auto-prune schedule saved');
+      }}>
+      <h2 id="prune-title">Enable auto-prune?</h2>
+      <p id="prune-description">Email and attachments older than {pruning.days} days on <strong>{pruning.name}</strong> will be permanently deleted from all folders, including Archive and Trash. This applies to existing and future email.</p>
+      <form method="dialog" className="compact">
+        <button value="cancel" autoFocus>Cancel</button>
+        <button value="confirm" className="danger-action">Confirm auto-prune</button>
+      </form>
+    </dialog>}
     {removing&&<dialog className="remove-dialog" aria-labelledby="remove-title" ref={element=>{if(element&&!element.open)element.showModal();}} onClose={()=>setRemoving(null)}>
       <h2 id="remove-title">Remove {removing}?</h2>
       <p>Letterdock stops accepting new messages for this domain. Existing messages and Cloudflare records stay in place.</p>

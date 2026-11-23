@@ -133,3 +133,15 @@ docker compose exec -T app node --import tsx --input-type=module -e '
   try { await refreshManagedIngress(); } finally { await db.end(); }
 '
 ```
+
+### Auto-prune
+
+In **Domains**, expand **Auto-prune** on a domain, choose an age from 1 to
+3650 days, and confirm the schedule. The policy starts off. It permanently
+deletes older existing and future email, including attachments, from every
+folder in that domain. Turn it off to stop future deletions. The existing
+move-to-Trash setting remains available under manual setup.
+
+Cleanup runs in batches while Letterdock is running. PostgreSQL autovacuum
+can reuse space from deleted rows. Filesystem free space may take longer to
+change because the database can keep allocated pages for reuse.

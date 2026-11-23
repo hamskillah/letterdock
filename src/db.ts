@@ -10,6 +10,7 @@ export async function migrate() {
       verified boolean NOT NULL DEFAULT false, last_received timestamptz, retention_days integer
     );
     ALTER TABLE domains ADD COLUMN IF NOT EXISTS removed_at timestamptz;
+    ALTER TABLE domains ADD COLUMN IF NOT EXISTS prune_days integer CHECK (prune_days BETWEEN 1 AND 3650);
     CREATE TABLE IF NOT EXISTS messages (
       id uuid PRIMARY KEY, domain text NOT NULL REFERENCES domains(name),
       recipient text NOT NULL, sender text NOT NULL, raw bytea NOT NULL,
@@ -20,6 +21,7 @@ export async function migrate() {
       labels text[] NOT NULL DEFAULT '{}'
     );
     CREATE INDEX IF NOT EXISTS messages_received ON messages(received DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS messages_domain_received ON messages(domain,received,id);
     CREATE INDEX IF NOT EXISTS messages_pending ON messages(id) WHERE state='pending';
     CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient);
     CREATE INDEX IF NOT EXISTS messages_search ON messages USING gin (
