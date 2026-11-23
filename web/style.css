@@ -135,3 +135,22 @@ button.primary:disabled:hover{background:var(--green)}
 .token-form label{flex:1;min-width:min(12rem,100%)}
 .setup-hint{font-size:.83rem}
 .setup-hint a{color:var(--green)}
+.addresses-page{max-width:64rem;gap:1.1rem}
+.address-add,.address-tools{display:grid;align-items:end;gap:.7rem}
+.address-add{grid-template-columns:repeat(3,minmax(0,1fr)) auto;padding:1rem;border:1px solid var(--line);border-radius:12px;background:#f7f9f5}
+.address-tools{grid-template-columns:minmax(0,2fr) minmax(0,1fr)}
+.addresses-page select{width:100%;min-width:0;border:1px solid var(--line);border-radius:var(--radius);padding:.6rem .65rem;background:var(--paper);color:var(--ink);font:inherit;line-height:1.25}
+.address-add label{display:block}
+.address-add label input,.address-add label select{display:block;margin-top:.36rem}
+.optional{color:var(--muted);font-weight:normal}
+.address-list{display:grid;gap:.5rem}
+.address-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.75rem;padding:.85rem 1rem;border:1px solid var(--line);border-radius:10px}
+.address-identity{display:flex;align-items:center;gap:.65rem;min-width:0}
+.address-identity svg{color:var(--green)}
+.address-identity h2{font-size:1rem;overflow-wrap:anywhere}
+.address-identity p{font-size:.81rem;margin-top:.2rem;overflow-wrap:anywhere}
+.address-count{color:var(--green);font-size:.72rem;white-space:nowrap}
+.address-edit{grid-column:1/-1;align-items:end;padding-top:.75rem;border-top:1px solid var(--line)}
+.address-edit input:not([type=checkbox]){width:min(16rem,60vw)}
+@media(max-width:900px){.address-add{grid-template-columns:repeat(2,minmax(0,1fr))}.address-add button{justify-self:start}.address-row{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:480px){.address-add,.address-tools{grid-template-columns:minmax(0,1fr)}.address-row{padding:.75rem}}

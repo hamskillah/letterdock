@@ -57,6 +57,11 @@ try {
   assert.equal(refused.status,409);
   const unsignedApply=await fetch(origin+'/api/cloudflare/oauth/apply',{method:'POST',headers,body:JSON.stringify({name:domain})});
   assert.equal(unsignedApply.status,403);
+  const manual='billing+'+id.slice(0,8);
+  const createAddress=()=>fetch(origin+'/api/inboxes',{method:'POST',headers,body:JSON.stringify({local:manual,domain,name:'Billing'})});
+  assert.equal((await createAddress()).status,201);
+  assert.equal((await createAddress()).status,409);
+  assert.equal((await fetch(origin+'/api/inboxes',{method:'POST',headers,body:JSON.stringify({local:'bad..name',domain})})).status,400);
   const inboxes=await fetch(origin+'/api/inboxes',{headers}).then(response=>response.json());
   assert.equal(inboxes.filter((row:{address:string})=>row.address===recipient).length,1);
   const record=await fetch(origin+'/api/messages/'+id,{headers}).then(response=>response.json());
@@ -91,6 +96,16 @@ try {
       await page.getByText(/different@example.org/).first().waitFor();
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
       if(size.width<700)await page.getByRole('button',{name:'Back to messages'}).click();
+      if(size.width<700)await page.getByRole('button',{name:'Open menu'}).click();
+      await page.getByRole('button',{name:'Addresses',exact:true}).click();
+      await page.getByRole('heading',{name:'Addresses',exact:true}).waitFor();
+      await page.getByRole('searchbox',{name:'Find an address'}).fill(manual);
+      const addressCard=page.getByText(manual+'@'+domain,{exact:true}).locator('xpath=ancestor::article[1]');
+      await addressCard.getByRole('button',{name:'Pin',exact:true}).click();
+      await addressCard.getByRole('button',{name:'Unpin',exact:true}).waitFor();
+      await addressCard.getByRole('button',{name:'Unpin',exact:true}).click();
+      await addressCard.getByRole('button',{name:'Open inbox'}).click();
+      await page.getByRole('heading',{name:manual+'@'+domain,exact:true}).waitFor();
       if(size.width<700)await page.getByRole('button',{name:'Open menu'}).click();
       await page.getByRole('button',{name:'Domains',exact:true}).click();
       await page.getByRole('heading',{name:'Domains',exact:true}).waitFor();

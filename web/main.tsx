@@ -8,7 +8,7 @@ type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;
 type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null};
 type CloudflareConnection = {canProvision:boolean;oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
-type Address = {address:string;name:string;pinned:boolean};
+type Address = {address:string;name:string;pinned:boolean;unread:number};
 type Integration = {keys:{id:string;name:string}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
 type Health = {free:number;staging:{configured:boolean;lastChecked:string|null;moreWaiting:boolean;error:boolean};queues:{state:string;count:number;oldest:string}[];ingest:{id:string;recipient:string;status:string;time:string}[];deliveries:{status:string;count:number}[]};
 
@@ -43,6 +43,9 @@ function App(){
   const [removing,setRemoving]=useState<string|null>(null);
   const [domainBusy,setDomainBusy]=useState<Record<string,string>>({});
   const [domains,setDomains]=useState<Domain[]>([]);
+  const [addressDomain,setAddressDomain]=useState('');
+  const [addressQuery,setAddressQuery]=useState('');
+  const [addressEdit,setAddressEdit]=useState('');
   const [addresses,setAddresses]=useState<Address[]>([]);
   const [domain,setDomain]=useState('');
   const [address,setAddress]=useState('');
@@ -165,6 +168,7 @@ function App(){
   }
   async function navigate(next:string){
     setPage(next);setMobileNav(false);setCredential('');setError('');
+    if(next==='Addresses')await action(directory);
     if(next==='Domains')await action(async()=>{
       setConnection(await api<CloudflareConnection>('/cloudflare'));
       if(cloudflareReturn&&new URLSearchParams(location.search).has('cloudflare')){
@@ -224,6 +228,8 @@ function App(){
     <form onSubmit={signIn}><label>Admin password<input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required/></label><button className="primary">Sign in <ArrowUpRight size={16}/></button></form>
     {error&&<p role="alert" className="error">{error}</p>}</div></main>;
 
+  const matchingAddresses = addresses.filter(item=>(!addressDomain||item.address.endsWith('@'+addressDomain))&&
+    (item.name+' '+item.address).toLowerCase().includes(addressQuery.trim().toLowerCase()));
   const heading=address||domain||(starOnly?'Starred':folder==='inbox'?'Inbox':folder==='archive'?'Archive':'Trash');
   return <div className={'app '+(mobileNav?'show-nav ':'')+(detail&&page==='Inbox'?'show-detail':'')}>
     <aside className="sidebar">
@@ -234,6 +240,7 @@ function App(){
         <button className={page==='Inbox'&&starOnly?'active':''} onClick={()=>mailbox('inbox','','',true)}><Star size={17}/>Starred</button>
         <button className={page==='Inbox'&&folder==='archive'?'active':''} onClick={()=>mailbox('archive')}><Archive size={17}/>Archive</button>
         <button className={page==='Inbox'&&folder==='trash'?'active':''} onClick={()=>mailbox('trash')}><Trash2 size={17}/>Trash</button>
+        <button className={page==='Addresses'?'active':''} aria-current={page==='Addresses'?'page':undefined} onClick={()=>void navigate('Addresses')}><Mail size={17}/>Addresses</button>
         <span className="nav-caption">CONFIGURATION</span>
         {[['Domains',Globe],['Integrations',Boxes],['Health',CircleGauge]].map(([name,Icon])=>{
           const Glyph=Icon as typeof Globe;
@@ -241,8 +248,8 @@ function App(){
         })}
         {domains.length>0&&<span className="nav-caption">DOMAINS</span>}
         {domains.map(item=><button title={item.name} key={item.name} className={domain===item.name&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox',item.name)}><span className={'dot '+(item.verified?'online':'')}/><span className="ellipsis">{item.name}</span></button>)}
-        {addresses.length>0&&<span className="nav-caption">ADDRESSES</span>}
-        {addresses.map(item=><button title={item.address} key={item.address} className={address===item.address&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox','',item.address)}><Mail size={15}/><span className="ellipsis">{item.name||item.address}</span>{item.pinned&&<Star size={12}/>}</button>)}
+        {addresses.some(item=>item.pinned)&&<span className="nav-caption">PINNED ADDRESSES</span>}
+        {addresses.filter(item=>item.pinned).map(item=><button title={item.address} key={item.address} className={address===item.address&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox','',item.address)}><Mail size={15}/><span className="ellipsis">{item.name||item.address}</span>{item.unread>0&&<span className="address-count">{item.unread}</span>}</button>)}
       </nav>
       <button className="signout" onClick={()=>void action(async()=>{await api('/logout','POST');setAuthorized(false);setDetail(null);setMessages([]);})}><LogOut size={17}/>Sign out</button>
     </aside>
@@ -297,6 +304,45 @@ function App(){
           </article>}
         </section>
       </div>}
+      {page==='Addresses'&&<section className="settings addresses-page">
+        <header className="settings-heading"><span className="section-icon"><Mail size={21}/></span><div><h1>Addresses</h1><p>Create an inbox address or manage addresses discovered by catch-all.</p></div></header>
+        {domains.some(item=>item.verified)?<form className="address-add" onSubmit={event=>submit(event,data=>api('/inboxes','POST',{
+          local:data.get('local'),domain:data.get('domain'),name:data.get('name')
+        }))}>
+          <label>Address prefix<input name="local" placeholder="billing" required maxLength={64} autoCapitalize="none" spellCheck={false}/></label>
+          <label>Receiving domain<select name="domain" required defaultValue={domains.find(item=>item.verified)?.name}>
+            {domains.filter(item=>item.verified).map(item=><option key={item.name}>{item.name}</option>)}
+          </select></label>
+          <label>Name <span className="optional">(optional)</span><input name="name" placeholder="Billing" maxLength={120}/></label>
+          <button className="primary">Add address</button>
+        </form>:<div className="domain-empty"><h2>Connect a receiving domain</h2><p>Verify a domain before you add addresses.</p><button onClick={()=>void navigate('Domains')}>Open Domains <ArrowUpRight size={14}/></button></div>}
+        <div className="address-tools">
+          <label>Find an address<input type="search" placeholder="Search by address or name" value={addressQuery} onChange={e=>setAddressQuery(e.target.value)}/></label>
+          <label>Domain<select value={addressDomain} onChange={e=>setAddressDomain(e.target.value)}>
+            <option value="">All domains</option>
+            {[...new Set([...domains.map(item=>item.name),...addresses.map(item=>item.address.split('@').at(-1)!)])].sort().map(item=><option key={item}>{item}</option>)}
+          </select></label>
+        </div>
+        <div className="address-list">
+          {matchingAddresses.map(item=><article className="address-row" key={item.address}>
+            <div className="address-identity"><Mail size={17}/><div><h2>{item.name||item.address}</h2>{item.name&&<p>{item.address}</p>}</div></div>
+            <div className="compact address-actions">
+              {item.unread>0&&<span className="address-count" aria-label={item.unread+' unread messages'}>{item.unread} unread</span>}
+              <button aria-pressed={item.pinned} onClick={()=>void action(async()=>{
+                await api('/inboxes','PATCH',{address:item.address,name:item.name,pinned:!item.pinned});await directory();
+              })}><Star size={15} fill={item.pinned?'currentColor':'none'}/>{item.pinned?'Unpin':'Pin'}</button>
+              <button onClick={()=>setAddressEdit(addressEdit===item.address?'':item.address)}>Rename</button>
+              <button onClick={()=>void action(()=>navigator.clipboard.writeText(item.address),'Address copied')}>Copy</button>
+              <button onClick={()=>mailbox('inbox','',item.address)}>Open inbox <ArrowUpRight size={14}/></button>
+            </div>
+            {addressEdit===item.address&&<form className="compact address-edit" onSubmit={event=>submit(event,async data=>{
+              await api('/inboxes','PATCH',{address:item.address,name:data.get('name'),pinned:item.pinned});setAddressEdit('');
+            })}><label>Display name<input name="name" maxLength={120} defaultValue={item.name}/></label><button className="primary">Save name</button><button type="button" onClick={()=>setAddressEdit('')}>Cancel</button></form>}
+          </article>)}
+          {matchingAddresses.length===0&&
+            <p className="empty-state">{addresses.length?'No addresses match these filters.':'No addresses yet. Add one above or receive an email at a new address.'}</p>}
+        </div>
+      </section>}
       {page==='Domains'&&<section className="settings domains-page">
         <header className="settings-heading"><span className="section-icon"><Globe size={21}/></span><div><h1>Domains</h1><p>Connect domains you own and receive mail at any address.</p></div></header>
         {connection&&<section className="domain-card connection-card" aria-labelledby="cloudflare-connection">
@@ -372,6 +418,7 @@ function App(){
               <p role="status">{check.applied?(item.verified?'DNS verified. Send a test email.':'Waiting for DNS. Letterdock will retry automatically.'):check.message}</p></>}
             </div>
             <div className="compact domain-actions">
+              {item.verified&&<button onClick={()=>{setAddressDomain(item.name);setAddressQuery('');void navigate('Addresses');}}>Manage addresses <ArrowUpRight size={14}/></button>}
               {check?.detected&&!check.dns.txtVerified&&<button onClick={()=>void action(async()=>{
                 const result=await api<{available:boolean;url?:string;message?:string}>('/domains/'+encodeURIComponent(item.name)+'/domain-connect');
                 if(!result.available||!result.url)throw Error(result.message||'Cloudflare authorization is unavailable.');

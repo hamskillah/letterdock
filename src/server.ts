@@ -235,10 +235,35 @@ app.route<{Params:{name:string}}>({
     }
   }
 });
-app.get('/api/inboxes',async()=> (await db.query('SELECT * FROM inboxes ORDER BY pinned DESC,address')).rows);
-app.patch<{Body:{address:string,name:string,pinned:boolean}}>('/api/inboxes',async req=>{
+app.get('/api/inboxes', async () => (await db.query(`
+  SELECT i.address,i.name,i.pinned,coalesce(counts.unread,0) AS unread
+  FROM inboxes i LEFT JOIN (
+    SELECT recipient,count(*)::int AS unread FROM messages
+    WHERE folder='inbox' AND unread GROUP BY recipient
+  ) counts ON counts.recipient=i.address
+  ORDER BY i.pinned DESC,i.address
+`)).rows);
+app.post<{Body:{local:string;domain:string;name?:string}}>('/api/inboxes',async(req,res)=>{
+  const local=String(req.body?.local??'').trim().toLowerCase();
+  const domain=String(req.body?.domain??'').trim().toLowerCase();
+  if(local.length>64||!/^[-a-z0-9!#$%&'*+/=?^_`{|}~]+(?:\.[-a-z0-9!#$%&'*+/=?^_`{|}~]+)*$/.test(local)) {
+    return res.code(400).send({message:'Enter the part before @, such as billing or invoices+shop.'});
+  }
+  const address=local+'@'+domain;
+  if(address.length>254)return res.code(400).send({message:'Email address is too long.'});
+  const result=await db.query(`INSERT INTO inboxes(address,name)
+    SELECT $1,$2 FROM domains WHERE name=$3 AND verified AND removed_at IS NULL
+    ON CONFLICT DO NOTHING RETURNING address`,[address,String(req.body?.name??'').trim().slice(0,120),domain]);
+  if(result.rowCount)return res.code(201).send({address});
+  const existing=await db.query('SELECT 1 FROM inboxes WHERE address=$1',[address]);
+  if(existing.rowCount)return res.code(409).send({message:'This address already has an inbox.'});
+  return res.code(422).send({message:'Select a verified receiving domain.'});
+});
+app.patch<{Body:{address:string,name:string,pinned:boolean}}>('/api/inboxes',async(req,res)=>{
   const b=req.body;
-  await db.query('UPDATE inboxes SET name=$2,pinned=$3 WHERE address=$1',[b.address,String(b.name).slice(0,120),b.pinned===true]);
+  const result=await db.query('UPDATE inboxes SET name=$2,pinned=$3 WHERE address=$1',
+    [b?.address,String(b?.name??'').trim().slice(0,120),b?.pinned===true]);
+  if(!result.rowCount)return res.code(404).send({message:'Inbox not found.'});
   return {ok:true};
 });
 app.get('/api/blocks',async()=> (await db.query('SELECT sender FROM blocks ORDER BY sender')).rows);
