@@ -2,6 +2,7 @@ services:
   app:
     environment:
       DOMAIN_CONNECT_KEY_FILE: /run/secrets/domain_connect_key
+      DOMAIN_CONNECT_PROVIDER_ID: ${DOMAIN_CONNECT_PROVIDER_ID:?Set the registered Domain Connect provider ID}
     secrets:
       - domain_connect_key
 secrets:
