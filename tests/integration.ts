@@ -8,7 +8,7 @@ import { cloudflareToken, connectCloudflare, decryptSecret } from '../src/cloudf
 import { db, migrate } from '../src/db.js';
 import { importMail, parseNext } from '../src/jobs.js';
 
-const origin='http://127.0.0.1:56314';
+const origin='http://localhost:56314';
 const password='integration-secret-password';
 const sessionSecret='integration-session-secret-over-32';
 process.env.SESSION_SECRET=sessionSecret;
@@ -38,7 +38,7 @@ const legacyHookId=randomUUID();
 await db.query('INSERT INTO hooks(id,url,secret,filter) VALUES($1,$2,$3,$4)',
   [legacyHookId,'https://example.net',legacyWebhook,'unused.integration.example']);
 const server=spawn(process.execPath,['--import','tsx','src/server.ts'],{
-  env:{...process.env,ADMIN_PASSWORD:password,SESSION_SECRET:sessionSecret,PUBLIC_URL:origin,PORT:'56314'},
+  env:{...process.env,ADMIN_PASSWORD:password,SESSION_SECRET:sessionSecret,PUBLIC_URL:'',APP_PORT:'56314',PORT:'56314'},
   stdio:'ignore'
 });
 try {

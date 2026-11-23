@@ -15,11 +15,10 @@ export function signedApplyUrl(providerId: string, domain: string, verification:
   return providerUi + templatePath(providerId) + '/apply?' + query + '&key=' + keyLabel + '&sig=' + encodeURIComponent(signature);
 }
 
-export async function domainConnectLink(domain: string, verification: string) {
+export async function domainConnectLink(domain: string, verification: string, origin: string) {
   const keyFile = process.env.DOMAIN_CONNECT_KEY_FILE;
-  const origin = process.env.PUBLIC_URL;
   const providerId = process.env.DOMAIN_CONNECT_PROVIDER_ID;
-  if (!keyFile || !origin || !providerId) return { available:false, message:'Cloudflare authorization is pending provider setup.' } as const;
+  if (!keyFile || !providerId) return { available:false, message:'Cloudflare authorization is pending provider setup.' } as const;
   const discovery = await resolveTxt('_domainconnect.' + domain).catch(error => {
     if (['ENODATA','ENOTFOUND'].includes(error?.code)) return [];
     throw error;

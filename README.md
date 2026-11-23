@@ -44,18 +44,36 @@ Open **http://localhost:3000** and sign in with the password you set. Use
 `v0.1.0-preview.1` tag predates those fixes. See [release status](docs/progress.md)
 for remaining verification.
 
+### Choose a custom port
+
+Set `APP_PORT` in `.env`. Leave `PUBLIC_URL` blank to use localhost on
+that port.
+
+```dotenv
+APP_PORT=8080
+PUBLIC_URL=
+```
+
+Run `docker compose up -d` to apply the change, then open
+**http://localhost:8080**. If your existing `.env` already sets `PUBLIC_URL`,
+clear it for localhost or update it to the exact origin your browser uses.
+The container continues listening on port 3000 internally.
+
 ### Access a VPS installation
 
 Compose binds the app to loopback and leaves PostgreSQL unpublished. For a
 private dashboard, forward the port from your machine and open the same
-localhost URL. Keep `PUBLIC_URL` set to the exact browser origin.
+localhost URL. For a custom port, replace both occurrences of `3000` below
+with your `APP_PORT`. If your local and remote ports differ, set
+`PUBLIC_URL` to the local browser origin.
 
 ```sh
 ssh -N -L 3000:127.0.0.1:3000 user@your-vps
 ```
 
 For public dashboard or API access, set `PUBLIC_URL` to your HTTPS origin and
-front the app with a reverse proxy. See the [sample Caddyfile](deploy/Caddyfile.example).
+front the app with a reverse proxy. Point its upstream to `127.0.0.1` on
+your configured `APP_PORT`. See the [sample Caddyfile](deploy/Caddyfile.example).
 Keep the application port and PostgreSQL private.
 
 ## Receive your first email

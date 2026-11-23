@@ -14,6 +14,8 @@ import { runJobs, stagingStatus } from './jobs.js';
 const app = Fastify({ logger: true, disableRequestLogging: true, routerOptions: { maxParamLength: 160 } });
 const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
+const listenPort = Number(process.env.PORT || 3000);
+const publicOrigin = new URL(process.env.PUBLIC_URL || 'http://localhost:'+(process.env.APP_PORT || listenPort)).origin;
 if (!password || password.length < 16 || !secret || secret.length < 32) throw Error('Configure ADMIN_PASSWORD and SESSION_SECRET');
 const signingKey = (purpose: string) => createHmac('sha256', secret).update('letterdock:'+purpose).digest();
 await app.register(cookies, { secret: signingKey('browser') });
@@ -36,7 +38,7 @@ app.addHook('preHandler', async (req, res) => {
     }
     return res.code(401).send({ name:'validation_error', statusCode:401, message:'Invalid API key' });
   }
-  if (!['GET','HEAD'].includes(req.method) && req.headers.origin !== process.env.PUBLIC_URL) {
+  if (!['GET','HEAD'].includes(req.method) && req.headers.origin !== publicOrigin) {
     return res.code(403).send({ message:'Origin rejected' });
   }
   if (path === '/api/login') return;
@@ -55,7 +57,7 @@ app.post<{Body:{password?:string}}>('/api/login', async (req,res) => {
   }
   denied=0;
   return res.setCookie('session', 'session:'+(Date.now()+86400000), {
-    signed:true,httpOnly:true,sameSite:'strict',secure:process.env.PUBLIC_URL?.startsWith('https:'),path:'/',maxAge:86400
+    signed:true,httpOnly:true,sameSite:'strict',secure:publicOrigin.startsWith('https:'),path:'/',maxAge:86400
   }).send({ok:true});
 });
 app.post('/api/logout', async (_req,res) => res.clearCookie('session',{path:'/'}).send({ok:true}));
@@ -121,7 +123,7 @@ app.get<{Params:{id:string}}>('/api/files/:id',async(req,res)=>{
 });
 app.post<{Body:{domain?:string}}>('/api/cloudflare/oauth/start', async (req,res) => {
   try {
-    const origin = new URL(process.env.PUBLIC_URL!);
+    const origin = new URL(publicOrigin);
     if (origin.protocol!=='https:' && !['127.0.0.1','localhost'].includes(origin.hostname)) {
       return res.code(400).send({message:'Use localhost or HTTPS for Cloudflare authorization.'});
     }
@@ -230,7 +232,7 @@ app.delete<{Params:{name:string}}>('/api/domains/:name', async (req,res) => {
 app.get<{Params:{name:string}}>('/api/domains/:name/domain-connect',async(req,res)=>{
   const {rows:[domain]}=await db.query('SELECT name,token FROM domains WHERE name=$1 AND removed_at IS NULL',[req.params.name]);
   if(!domain)return res.code(404).send({message:'Domain not found'});
-  try { return await domainConnectLink(domain.name,domain.token); }
+  try { return await domainConnectLink(domain.name,domain.token,publicOrigin); }
   catch { return res.code(502).send({message:'Cloudflare authorization could not be prepared. Try again.'}); }
 });
 app.route<{Params:{name:string}}>({
@@ -386,7 +388,7 @@ app.get<{Params:{id:string,attachment:string}}>('/emails/receiving/:id/attachmen
   if(!row)return res.code(404).send(notFound('Attachment not found'));
   const ttl=Date.now()+900000;
   const token=downloads.sign(attachment+':'+key.id+':'+ttl);
-  return {object:'attachment',...row,expires_at:new Date(ttl).toISOString(),download_url:process.env.PUBLIC_URL+'/download/'+encodeURIComponent(token)};
+  return {object:'attachment',...row,expires_at:new Date(ttl).toISOString(),download_url:publicOrigin+'/download/'+encodeURIComponent(token)};
 });
 app.get<{Params:{token:string}}>('/download/:token',async(req,res)=>{
   const token=downloads.unsign(req.params.token);
@@ -411,7 +413,7 @@ try {
   await migration.query('ROLLBACK');
   throw error;
 } finally { migration.release(); }
-await app.listen({port:Number(process.env.PORT||3000),host:'0.0.0.0'});
+await app.listen({port:listenPort,host:'0.0.0.0'});
 async function tick() {
   await runJobs();
   setTimeout(tick, 3000);
