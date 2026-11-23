@@ -1,0 +1,56 @@
+import pg from 'pg';
+
+export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+export async function migrate() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS domains (
+      name text PRIMARY KEY, token uuid NOT NULL DEFAULT gen_random_uuid(),
+      verified boolean NOT NULL DEFAULT false, last_received timestamptz, retention_days integer
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id uuid PRIMARY KEY, domain text NOT NULL REFERENCES domains(name),
+      recipient text NOT NULL, sender text NOT NULL, raw bytea NOT NULL,
+      subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '', html text NOT NULL DEFAULT '',
+      headers jsonb NOT NULL DEFAULT '{}', message_id text, state text NOT NULL DEFAULT 'pending',
+      error text, received timestamptz NOT NULL DEFAULT now(), unread boolean NOT NULL DEFAULT true,
+      starred boolean NOT NULL DEFAULT false, folder text NOT NULL DEFAULT 'inbox',
+      labels text[] NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX IF NOT EXISTS messages_received ON messages(received DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient);
+    CREATE INDEX IF NOT EXISTS messages_search ON messages USING gin (
+      to_tsvector('simple', sender || ' ' || recipient || ' ' || subject || ' ' || body)
+    );
+    CREATE TABLE IF NOT EXISTS attachments (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(), message uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      filename text NOT NULL, mime text NOT NULL, data bytea NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message);
+    CREATE TABLE IF NOT EXISTS inboxes (
+      address text PRIMARY KEY, name text NOT NULL DEFAULT '', pinned boolean NOT NULL DEFAULT false
+    );
+    CREATE TABLE IF NOT EXISTS blocks (sender text PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, hash text NOT NULL UNIQUE
+    );
+    CREATE TABLE IF NOT EXISTS hooks (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(), url text NOT NULL, secret text NOT NULL,
+      filter text NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS deliveries (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(), hook uuid NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,
+      message uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE, attempts integer NOT NULL DEFAULT 0,
+      next_attempt timestamptz NOT NULL DEFAULT now(), status text NOT NULL DEFAULT 'pending',
+      UNIQUE(hook, message)
+    );
+    CREATE TABLE IF NOT EXISTS delivery_log (
+      id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      delivery uuid REFERENCES deliveries(id) ON DELETE CASCADE, result text NOT NULL,
+      attempted timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS ingest_log (
+      id uuid PRIMARY KEY, recipient text NOT NULL, status text NOT NULL, time timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+}

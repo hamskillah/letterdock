@@ -1,0 +1,7 @@
+name = "letterdock"
+main = "worker.js"
+compatibility_date = "2026-11-23"
+
+[[r2_buckets]]
+binding = "STAGING"
+bucket_name = "letterdock-staging"

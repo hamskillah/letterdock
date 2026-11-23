@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: letterdock
+      POSTGRES_USER: letterdock
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U letterdock"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://letterdock:${POSTGRES_PASSWORD}@db:5432/letterdock
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    restart: unless-stopped
+volumes:
+  database:
