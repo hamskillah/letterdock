@@ -6,7 +6,7 @@ import './style.css';
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
 type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;error:string;attachments:{id:string;filename:string;mime:string;bytes:number}[]};
 type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null};
-type CloudflareConnection = {configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
+type CloudflareConnection = {oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
 type Address = {address:string;name:string;pinned:boolean};
 type Integration = {keys:{id:string;name:string}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
@@ -22,6 +22,7 @@ async function api<T>(path:string, method='GET', data?:unknown): Promise<T> {
 }
 const when=(value:string)=>new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(value));
 const returningDomain = new URLSearchParams(location.search).get('domainConnect');
+const cloudflareReturn = new URLSearchParams(location.search).get('cloudflare');
 const blankFilters={from:'',to:'',subject:'',label:'',since:'',until:'',attachment:''};
 const logo=<img className="brand-mark" src="/letterdock.svg" width="36" height="36" alt=""/>;
 
@@ -81,7 +82,7 @@ function App(){
     return '/messages?'+params;
   }
   useEffect(()=>{
-    directory().then(()=>{setAuthorized(true);if(returningDomain)void navigate('Domains');}).catch(cause=>{
+    directory().then(()=>{setAuthorized(true);if(returningDomain||cloudflareReturn)void navigate('Domains');}).catch(cause=>{
       setAuthorized(false);
       if(!(cause instanceof AccessError))fail(cause);
     });
@@ -154,6 +155,10 @@ function App(){
     setPage(next);setMobileNav(false);setCredential('');setError('');
     if(next==='Domains')await action(async()=>{
       setConnection(await api<CloudflareConnection>('/cloudflare'));
+      if(cloudflareReturn&&new URLSearchParams(location.search).has('cloudflare')){
+        history.replaceState(null,'',location.pathname);
+        if(cloudflareReturn==='authorization-failed') throw Error('Cloudflare authorization failed or was canceled. Try connecting again.');
+      }
       if(returningDomain&&new URLSearchParams(location.search).has('domainConnect')){
         history.replaceState(null,'',location.pathname);
         await checkCloudflare(returningDomain);
@@ -280,15 +285,28 @@ function App(){
         {connection&&<section className="domain-card connection-card" aria-labelledby="cloudflare-connection">
           <div className="domain-title"><div><h2 id="cloudflare-connection">Cloudflare connection</h2>
             <p>Connect once to set up DNS and catch-all from Letterdock.</p></div>
-            <span className={'status '+(connection.configured?'ok':'')}>{connection.configured?'Token connected':'Token required'}</span>
+            <span className={'status '+(connection.configured?'ok':'')}>{connection.oauthConnected?'OAuth connected':connection.configured?'Token connected':'Connect required'}</span>
           </div>
           <dl className="connection-checks">
-            <div><dt>API access</dt><dd>{connection.configured?'Configured':'Connect a scoped token'}</dd></div>
+            <div><dt>API access</dt><dd>{connection.configured?'Configured':'Authorize access'}</dd></div>
             <div><dt>Email Worker</dt><dd>{connection.workerConfigured?'Configured':'Deploy Worker'}</dd></div>
             <div><dt>Private R2 staging</dt><dd>{connection.stagingConfigured?'Configured':'Configure R2'}</dd></div>
           </dl>
+          <div className="compact">
+            <button className="primary" disabled={connecting} onClick={()=>void action(async()=>{
+              setConnecting(true);
+              try {
+                const {url}=await api<{url:string}>('/cloudflare/oauth/start','POST');
+                location.assign(url);
+              } finally {setConnecting(false);}
+            })}>{connection.oauthConnected?'Reconnect Cloudflare':'Connect Cloudflare'} <ArrowUpRight size={15}/></button>
+            {connection.oauthConnected&&<button onClick={()=>void action(async()=>{
+              setConnection(await api<CloudflareConnection>('/cloudflare','DELETE'));
+              setCloudflare({});
+            },'Cloudflare disconnected')}>Disconnect</button>}
+          </div>
           {!connection.fromEnvironment&&<details>
-            <summary>{connection.configured?'Manage token':'Connect Cloudflare'}</summary>
+            <summary>{connection.configured&&!connection.oauthConnected?'Manage API token':'Use API token instead'}</summary>
             <p>Create a token scoped to your inbound zones with Zone Read, DNS Edit, Zone Settings Edit, and Email Routing Rules Edit.</p>
             <a className="button" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Open Cloudflare API Tokens <ArrowUpRight size={14}/></a>
             <form className="settings-form token-form" onSubmit={event=>{

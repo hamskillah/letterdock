@@ -5,12 +5,13 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolveMx, resolveTxt } from 'node:dns/promises';
 import { resolve } from 'node:path';
 import { domainToASCII } from 'node:url';
+import { completeOAuth, startOAuth, type OAuthState } from './cloudflare-oauth.js';
 import { domainConnectLink } from './domain-connect.js';
 import { connectCloudflare, connectionStatus, domainSetup, SetupConflict } from './cloudflare.js';
 import { db, migrate } from './db.js';
 import { runJobs, stagingStatus } from './jobs.js';
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, disableRequestLogging: true });
 const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 if (!password || password.length < 16 || !secret || secret.length < 32) throw Error('Configure ADMIN_PASSWORD and SESSION_SECRET');
@@ -112,6 +113,34 @@ app.get<{Params:{id:string}}>('/api/files/:id',async(req,res)=>{
   if(!row) return res.code(404).send();
   return res.header('Content-Disposition',safeName(row.filename)).type('application/octet-stream').send(row.data);
 });
+app.post('/api/cloudflare/oauth/start', async (_req,res) => {
+  try {
+    const origin = new URL(process.env.PUBLIC_URL!);
+    if (origin.protocol!=='https:' && !['127.0.0.1','localhost'].includes(origin.hostname)) {
+      return res.code(400).send({message:'Use localhost or HTTPS for Cloudflare authorization.'});
+    }
+    const {pending,url}=await startOAuth(new URL('/oauth/cloudflare/callback',origin).href);
+    res.setCookie('cf_pending',JSON.stringify(pending),{
+      signed:true,httpOnly:true,sameSite:'lax',secure:origin.protocol==='https:',
+      path:'/oauth/cloudflare/callback',maxAge:600
+    });
+    return {url};
+  } catch { return res.code(502).send({message:'Cloudflare could not start authorization. Try again.'}); }
+});
+app.get<{Querystring:{code?:string;state?:string;iss?:string}}>('/oauth/cloudflare/callback', async(req,res)=>{
+  const state=req.unsignCookie(req.cookies.cf_pending??'');
+  res.clearCookie('cf_pending',{path:'/oauth/cloudflare/callback'});
+  res.header('Cache-Control','no-store').header('Referrer-Policy','no-referrer');
+  try {
+    if(!state.valid || !state.value) throw Error();
+    const pending=JSON.parse(state.value) as OAuthState;
+    if(Date.now()>pending.expires || req.query.state!==pending.state || req.query.iss!=='https://mcp.cloudflare.com' || !req.query.code) throw Error();
+    await completeOAuth(pending,req.query.code);
+    return res.redirect('/?cloudflare=connected',303);
+  } catch {
+    return res.redirect('/?cloudflare=authorization-failed',303);
+  }
+});
 app.get('/api/cloudflare', async () => connectionStatus());
 app.post<{Body:{token:string}}>('/api/cloudflare', async (req,res) => {
   if (process.env.CLOUDFLARE_API_TOKEN) return res.code(409).send({message:'The Cloudflare token is managed by the server environment.'});
@@ -124,8 +153,7 @@ app.post<{Body:{token:string}}>('/api/cloudflare', async (req,res) => {
   }
 });
 app.delete('/api/cloudflare', async (_req,res) => {
-  if (process.env.CLOUDFLARE_API_TOKEN) return res.code(409).send({message:'The Cloudflare token is managed by the server environment.'});
-  await db.query("DELETE FROM settings WHERE key='cloudflare_token'");
+  await db.query("DELETE FROM settings WHERE key IN ('cloudflare_token','cloudflare_oauth')");
   return connectionStatus();
 });
 app.get('/api/domains',async()=> (await db.query('SELECT name,token,verified,last_received,retention_days FROM domains WHERE removed_at IS NULL ORDER BY name')).rows);
