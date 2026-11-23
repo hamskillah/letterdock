@@ -1,10 +1,14 @@
 # Release status
 
-The local integration suite covers durable PostgreSQL import, catch-all routing, a BCC
-envelope recipient, duplicate object delivery, search and labels, sanitized HTML, the
-official Node SDK, attachment download, and Chromium navigation at desktop and mobile sizes.
+Letterdock is in preview. The current `main` branch includes security and
+storage fixes added after `v0.1.0-preview.1`.
 
-Public release still requires a provisioned private Cloudflare staging bucket, Worker,
-two test domains, and access to the target VPS. Verify Gmail and Outlook delivery,
-Worker storage failure as observed by the sender, VPS downtime replay, the 25 MiB
-boundary, and signed HTTPS webhook retries on that deployment before publishing.
+CI checks TypeScript, builds the dashboard and Docker image, and runs the
+PostgreSQL and Chromium integration suite. The suite covers catch-all import,
+BCC, duplicate imports, HTML sanitization, SDK and attachment access,
+domain-scoped keys, and automatic pruning.
+
+Before promoting a build to a stable release, verify real external delivery,
+sender-visible Worker storage failures, recovery after VPS downtime, and
+signed webhook retries against the deployment being released. Follow the
+[setup and upgrade guide](../README.md) for deployment checks.
