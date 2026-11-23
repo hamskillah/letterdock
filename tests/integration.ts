@@ -4,12 +4,14 @@ import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
 import { Resend } from 'resend';
 import { signedApplyUrl } from '../src/domain-connect.js';
-import { cloudflareToken, connectCloudflare } from '../src/cloudflare.js';
+import { cloudflareToken, connectCloudflare, decryptSecret } from '../src/cloudflare.js';
 import { db, migrate } from '../src/db.js';
 import { importMail, parseNext } from '../src/jobs.js';
 
 const origin='http://127.0.0.1:56314';
 const password='integration-secret-password';
+const sessionSecret='integration-session-secret-over-32';
+process.env.SESSION_SECRET=sessionSecret;
 const id=randomUUID();
 const domain='inbox.integration.example';
 const recipient='bcc+'+id.slice(0,8)+'@'+domain;
@@ -31,8 +33,12 @@ assert(verify('RSA-SHA256',Buffer.from(apply.search.slice(1).split('&key=')[0]),
   Buffer.from(apply.searchParams.get('sig')!,'base64')));
 
 await migrate();
+const legacyWebhook='whsec_'+Buffer.alloc(32,3).toString('base64');
+const legacyHookId=randomUUID();
+await db.query('INSERT INTO hooks(id,url,secret,filter) VALUES($1,$2,$3,$4)',
+  [legacyHookId,'https://example.net',legacyWebhook,'unused.integration.example']);
 const server=spawn(process.execPath,['--import','tsx','src/server.ts'],{
-  env:{...process.env,ADMIN_PASSWORD:password,SESSION_SECRET:'integration-session-secret-over-32',PUBLIC_URL:origin,PORT:'56314'},
+  env:{...process.env,ADMIN_PASSWORD:password,SESSION_SECRET:sessionSecret,PUBLIC_URL:origin,PORT:'56314'},
   stdio:'ignore'
 });
 try {
@@ -73,7 +79,9 @@ try {
   assert.equal(mutation.status,200);
   const found=await fetch(origin+'/api/messages?label=Paid&starred=true&q=Invoice',{headers}).then(response=>response.json());
   assert(found.some((row:{id:string})=>row.id===id));
-  const key=await fetch(origin+'/api/keys',{method:'POST',headers,body:JSON.stringify({name:'integration test'})}).then(response=>response.json());
+  const unscoped=await fetch(origin+'/api/keys',{method:'POST',headers,body:JSON.stringify({name:'unscoped'})});
+  assert.equal(unscoped.status,400);
+  const key=await fetch(origin+'/api/keys',{method:'POST',headers,body:JSON.stringify({name:'integration test '+id,domain})}).then(response=>response.json());
   const sdk=new Resend(key.secret,{baseUrl:origin});
   const email=await sdk.emails.receiving.get(id);
   assert.equal(email.data?.id,id,JSON.stringify(email.error));
@@ -82,6 +90,26 @@ try {
   const attachment=await sdk.emails.receiving.attachments.get({emailId:id,id:record.attachments[0].id});
   assert(attachment.data?.download_url,JSON.stringify(attachment.error));
   assert.equal((await fetch(attachment.data.download_url).then(response=>response.text())).trim(),'paid');
+  await db.query("UPDATE messages SET folder='trash' WHERE id=$1",[id]);
+  try {
+    assert.equal((await sdk.emails.receiving.get(id)).data,null);
+    assert.equal((await sdk.emails.receiving.attachments.get({emailId:id,id:record.attachments[0].id})).data,null);
+    assert.equal((await fetch(attachment.data.download_url)).status,404);
+  } finally {
+    await db.query("UPDATE messages SET folder='inbox' WHERE id=$1",[id]);
+  }
+  const scopedDomain='other.integration.example';
+  await db.query('INSERT INTO domains(name,verified) VALUES($1,true) ON CONFLICT(name) DO NOTHING',[scopedDomain]);
+  const otherKey=await fetch(origin+'/api/keys',{method:'POST',headers,body:JSON.stringify({name:'other domain',domain:scopedDomain})}).then(r=>r.json());
+  const otherSdk=new Resend(otherKey.secret,{baseUrl:origin});
+  assert.equal((await otherSdk.emails.receiving.get(id)).data,null);
+  assert.deepEqual((await otherSdk.emails.receiving.attachments.list({emailId:id})).data?.data,[]);
+  const storedHook=await db.query('SELECT secret FROM hooks WHERE id=$1',[legacyHookId]);
+  assert.notEqual(storedHook.rows[0].secret,legacyWebhook);
+  assert.equal(decryptSecret(storedHook.rows[0].secret,'webhook'),legacyWebhook);
+  const oversized=randomUUID();
+  await importMail(oversized,'sender@example.net',recipient,new Uint8Array(20*1024**2+1));
+  assert.equal((await db.query('SELECT status FROM ingest_log WHERE id=$1',[oversized])).rows[0].status,'message_too_large');
   const browser=await chromium.launch();
   try {
     for(const size of [{width:1440,height:900},{width:390,height:844}]){
@@ -123,8 +151,21 @@ try {
       await page.close();
     }
   } finally { await browser.close(); }
-  const retained=await sdk.emails.receiving.get(id);
-  assert.equal(retained.data?.id,id);
+  assert.equal((await sdk.emails.receiving.get(id)).data?.id,id);
+  await db.query("UPDATE domains SET retention_days=1 WHERE name=$1",[domain]);
+  await db.query("UPDATE messages SET received=now()-interval '2 days' WHERE id=$1",[id]);
+  try {
+    assert.equal((await sdk.emails.receiving.get(id)).data,null);
+    assert.equal((await fetch(attachment.data.download_url)).status,404);
+  } finally {
+    await db.query("UPDATE domains SET retention_days=NULL WHERE name=$1",[domain]);
+    await db.query("UPDATE messages SET received=now() WHERE id=$1",[id]);
+  }
+  const integrations=await fetch(origin+'/api/integrations',{headers}).then(r=>r.json());
+  const scopedKey=integrations.keys.find((item:{name:string;domain:string})=>item.name==='integration test '+id);
+  assert(scopedKey);
+  assert.equal((await fetch(origin+'/api/integrations/key/'+scopedKey.id,{method:'DELETE',headers:{cookie,origin}})).status,200);
+  assert.equal((await fetch(attachment.data.download_url)).status,404);
   const ignored=randomUUID();
   await importMail(ignored,'sender@example.net',recipient,raw);
   const rejection=await db.query('SELECT status FROM ingest_log WHERE id=$1',[ignored]);
@@ -133,7 +174,6 @@ try {
   assert.equal(readded.status,200);
   const restored=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[domain]);
   assert.deepEqual(restored.rows[0],{verified:false,removed_at:null});
-  process.env.SESSION_SECRET='integration-session-secret-over-32';
   const testToken='cloudflare_test_token_123456789';
   const originalFetch=globalThis.fetch;
   globalThis.fetch=async (input,options)=>{
@@ -155,5 +195,6 @@ try {
   console.log('Passed: catch-all, duplicate ingest, BCC, sanitization, labels/search, SDK and attachment download');
 } finally {
   server.kill();
+  await db.query('DELETE FROM hooks WHERE id=$1',[legacyHookId]);
   await db.end();
 }

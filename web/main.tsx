@@ -9,7 +9,7 @@ type Domain = {name:string;token:string;verified:boolean;last_received:string|nu
 type CloudflareConnection = {canProvision:boolean;oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
 type Address = {address:string;name:string;pinned:boolean;unread:number};
-type Integration = {keys:{id:string;name:string}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
+type Integration = {keys:{id:string;name:string;domain:string|null}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
 type Health = {free:number;staging:{configured:boolean;lastChecked:string|null;moreWaiting:boolean;error:boolean};queues:{state:string;count:number;oldest:string}[];ingest:{id:string;recipient:string;status:string;time:string}[];deliveries:{status:string;count:number}[]};
 
 class AccessError extends Error {}
@@ -461,8 +461,16 @@ function App(){
       </section>}
       {page==='Integrations'&&<section className="settings"><header className="settings-heading"><span className="section-icon"><Boxes size={21}/></span><h1>Integrations</h1></header>
         {credential&&<div className="secret"><strong>Copy this secret now</strong><code>{credential}</code><button onClick={()=>void action(()=>navigator.clipboard.writeText(credential),'Copied')}>Copy</button><button onClick={()=>setCredential('')}>Dismiss</button></div>}
-        <h2>Read-only API keys</h2><form className="settings-form" onSubmit={e=>submit(e,async data=>setCredential((await api<{secret:string}>('/keys','POST',{name:data.get('name')})).secret))}><label>Key name<input name="name" required/></label><button className="primary">Create key</button></form>
-        {integration?.keys.map(item=><div className="settings-row compact" key={item.id}><strong>{item.name}</strong><button onClick={()=>{if(confirm('Revoke this API key?'))void action(async()=>{await api('/integrations/key/'+item.id,'DELETE');await refresh();});}}>Revoke</button></div>)}
+        <h2 id="api-key-heading">Read-only API keys</h2>
+        <form className="settings-form" aria-labelledby="api-key-heading" onSubmit={e=>submit(e,async data=>setCredential((await api<{secret:string}>('/keys','POST',{name:data.get('name'),domain:data.get('domain')})).secret))}>
+          <label htmlFor="key-name">Key name<input id="key-name" name="name" required maxLength={120}/></label>
+          <label htmlFor="key-domain">Domain<select id="key-domain" name="domain" required defaultValue="">
+            <option value="" disabled>Select a verified domain</option>
+            {domains.filter(item=>item.verified).map(item=><option key={item.name}>{item.name}</option>)}
+          </select></label>
+          <button className="primary">Create key</button>
+        </form>
+        {integration?.keys.map(item=><div className="settings-row compact" key={item.id}><span><strong>{item.name}</strong><small>{item.domain??'Disabled · Create a domain-scoped key'}</small></span><button onClick={()=>{if(confirm('Revoke this API key?'))void action(async()=>{await api('/integrations/key/'+item.id,'DELETE');await refresh();});}}>Revoke</button></div>)}
         <h2>Webhooks</h2><form className="settings-form" onSubmit={e=>submit(e,async data=>setCredential((await api<{secret:string}>('/hooks','POST',{url:data.get('url'),filter:data.get('filter')})).secret))}><label>Public HTTPS endpoint<input name="url" type="url" required/></label><label>Domain or address filter<input name="filter" placeholder="All addresses"/></label><button className="primary">Add webhook</button></form>
         {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span>{item.url}</span><small>{item.filter||'All addresses'}</small><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
         <h2>Delivery attempts</h2><button onClick={()=>void action(refresh)}>Refresh history</button>

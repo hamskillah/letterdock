@@ -26,26 +26,33 @@ async function cloudflare<T>(apiToken: string, path: string, method = 'GET', bod
   return data.result;
 }
 
-function encryptionKey() {
+function encryptionKey(purpose: string) {
   const secret = process.env.SESSION_SECRET;
   if (!secret) throw new Error('Session secret is unavailable');
-  return createHash('sha256').update('letterdock-cloudflare-token:' + secret).digest();
+  return createHash('sha256').update('letterdock-'+purpose+':' + secret).digest();
 }
 
-export async function readCredential(key: string) {
-  const { rows: [row] } = await db.query('SELECT value FROM settings WHERE key=$1', [key]);
-  if (!row) return undefined;
-  const [iv, tag, encrypted] = String(row.value).split('.').map(value => Buffer.from(value, 'base64'));
-  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), iv);
+export function decryptSecret(encoded: string, purpose: string) {
+  const [iv, tag, encrypted] = encoded.split('.').map(value => Buffer.from(value, 'base64'));
+  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(purpose), iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 
-export async function saveCredential(key: string, value: string) {
+export function encryptSecret(value: string, purpose: string) {
   const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKey(purpose), iv);
   const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
-  const encoded = [iv, cipher.getAuthTag(), encrypted].map(part => part.toString('base64')).join('.');
+  return [iv, cipher.getAuthTag(), encrypted].map(part => part.toString('base64')).join('.');
+}
+
+export async function readCredential(key: string) {
+  const { rows: [row] } = await db.query('SELECT value FROM settings WHERE key=$1', [key]);
+  return row ? decryptSecret(row.value, 'cloudflare-token') : undefined;
+}
+
+export async function saveCredential(key: string, value: string) {
+  const encoded = encryptSecret(value, 'cloudflare-token');
   await db.query(`INSERT INTO settings(key,value) VALUES($1,$2)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [key, encoded]);
 }

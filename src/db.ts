@@ -20,6 +20,7 @@ export async function migrate() {
       labels text[] NOT NULL DEFAULT '{}'
     );
     CREATE INDEX IF NOT EXISTS messages_received ON messages(received DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS messages_pending ON messages(id) WHERE state='pending';
     CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient);
     CREATE INDEX IF NOT EXISTS messages_search ON messages USING gin (
       to_tsvector('simple', sender || ' ' || recipient || ' ' || subject || ' ' || body)
@@ -36,6 +37,7 @@ export async function migrate() {
     CREATE TABLE IF NOT EXISTS api_keys (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, hash text NOT NULL UNIQUE
     );
+    ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS domain text REFERENCES domains(name);
     CREATE TABLE IF NOT EXISTS hooks (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), url text NOT NULL, secret text NOT NULL,
       filter text NOT NULL DEFAULT ''
@@ -54,5 +56,9 @@ export async function migrate() {
     CREATE TABLE IF NOT EXISTS ingest_log (
       id uuid PRIMARY KEY, recipient text NOT NULL, status text NOT NULL, time timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS domain text;
+    ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS bytes bigint NOT NULL DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS ingest_log_domain_time ON ingest_log(domain,time) WHERE status='stored';
+    CREATE INDEX IF NOT EXISTS ingest_log_rejected_time ON ingest_log(time) WHERE status<>'stored';
   `);
 }

@@ -38,13 +38,8 @@ async function provision(account: string) {
   });
   if(!subdomain.subdomain)subdomain=await mcpRequest(base+'/workers/subdomain','PUT',{subdomain:ingress.worker});
   if(!subdomain.subdomain || !/^[a-z0-9-]+$/.test(subdomain.subdomain))throw new Error('Cloudflare did not return a valid Workers subdomain.');
+  await updateManagedIngress(ingress);
   const path=base+'/workers/scripts/'+ingress.worker;
-  const script=await readFile('cloudflare/worker.js','utf8');
-  await uploadWorker(path,script,{
-    main_module:'worker.js',compatibility_date:'2026-11-23',
-    bindings:[{type:'r2_bucket',name:'STAGING',bucket_name:ingress.bucket},
-      {type:'secret_text',name:'PULL_SECRET',text:ingress.secret}]
-  });
   await mcpRequest(path+'/subdomain','POST',{enabled:true,previews_enabled:false});
   const url='https://'+ingress.worker+'.'+subdomain.subdomain+'.workers.dev';
   let ready=false;
@@ -58,4 +53,34 @@ async function provision(account: string) {
   ingress.url=url;
   await saveCredential(key,JSON.stringify(ingress));
   return ingress;
+}
+
+type LifecycleRule = { id:string;conditions:{prefix:string};enabled:boolean;[key:string]:unknown };
+
+async function updateManagedIngress(ingress: Ingress) {
+  const base='/accounts/'+ingress.account;
+  const lifecycle=base+'/r2/buckets/'+ingress.bucket+'/lifecycle';
+  const {rules=[]}=await mcpRequest<{rules?:LifecycleRule[]}>(lifecycle);
+  const expiration: LifecycleRule = {
+    id:'letterdock-staging-expiration', conditions:{prefix:'mail/'}, enabled:true,
+    deleteObjectsTransition:{condition:{type:'Age',maxAge:7*86400}}
+  };
+  await mcpRequest(lifecycle,'PUT',{rules:[...rules.filter(rule=>rule.id!==expiration.id),expiration]});
+  const script=await readFile('cloudflare/worker.js','utf8');
+  await uploadWorker(base+'/workers/scripts/'+ingress.worker,script,{
+    main_module:'worker.js',compatibility_date:'2026-11-23',
+    bindings:[{type:'r2_bucket',name:'STAGING',bucket_name:ingress.bucket},
+      {type:'secret_text',name:'PULL_SECRET',text:ingress.secret}]
+  });
+}
+
+export async function refreshManagedIngress() {
+  const ingress=await managedIngress();
+  if(!ingress?.url)throw new SetupConflict('Set up managed Cloudflare ingress first.');
+  await updateManagedIngress(ingress);
+  const response=await fetch(ingress.url+'/mail',{
+    headers:{Authorization:'Bearer '+ingress.secret},redirect:'error',signal:AbortSignal.timeout(10000)
+  });
+  await response.body?.cancel();
+  if(!response.ok)throw Error('Managed ingress health check failed (HTTP '+response.status+')');
 }

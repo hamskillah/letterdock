@@ -28,6 +28,10 @@ export default {
   },
 
   async email(message, env) {
+    if (message.rawSize > 20 * 1024 ** 2) {
+      message.setReject('Message exceeds the 20 MiB limit');
+      return;
+    }
     const id = crypto.randomUUID();
     try {
       const stream = new FixedLengthStream(message.rawSize);

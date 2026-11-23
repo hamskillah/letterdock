@@ -1,21 +1,24 @@
 import Fastify from 'fastify';
-import cookies from '@fastify/cookie';
+import cookies, { Signer } from '@fastify/cookie';
 import files from '@fastify/static';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolveMx, resolveTxt } from 'node:dns/promises';
 import { resolve } from 'node:path';
 import { domainToASCII } from 'node:url';
 import { completeOAuth, startOAuth, type OAuthState } from './cloudflare-oauth.js';
 import { domainConnectLink } from './domain-connect.js';
-import { connectCloudflare, connectionStatus, domainSetup, SetupConflict } from './cloudflare.js';
+import { connectCloudflare, connectionStatus, encryptSecret, domainSetup, SetupConflict } from './cloudflare.js';
 import { db, migrate } from './db.js';
 import { runJobs, stagingStatus } from './jobs.js';
 
-const app = Fastify({ logger: true, disableRequestLogging: true });
+const app = Fastify({ logger: true, disableRequestLogging: true, routerOptions: { maxParamLength: 160 } });
 const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 if (!password || password.length < 16 || !secret || secret.length < 32) throw Error('Configure ADMIN_PASSWORD and SESSION_SECRET');
-await app.register(cookies, { secret });
+const signingKey = (purpose: string) => createHmac('sha256', secret).update('letterdock:'+purpose).digest();
+await app.register(cookies, { secret: signingKey('browser') });
+const downloads = new Signer(signingKey('downloads'));
+const apiScope = new WeakMap<object, {id:string;domain:string}>();
 await app.register(files, { root: resolve('dist') });
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -27,7 +30,10 @@ app.addHook('preHandler', async (req, res) => {
   res.header('Cache-Control', 'no-store');
   if (path.startsWith('/emails/receiving')) {
     const auth = req.headers.authorization;
-    if (auth?.startsWith('Bearer ') && (await db.query('SELECT 1 FROM api_keys WHERE hash=$1', [digest(auth.slice(7))])).rowCount) return;
+    if (auth?.startsWith('Bearer ')) {
+      const {rows:[key]}=await db.query('SELECT id,domain FROM api_keys WHERE hash=$1 AND domain IS NOT NULL',[digest(auth.slice(7))]);
+      if(key){apiScope.set(req,key);return;}
+    }
     return res.code(401).send({ name:'validation_error', statusCode:401, message:'Invalid API key' });
   }
   if (!['GET','HEAD'].includes(req.method) && req.headers.origin !== process.env.PUBLIC_URL) {
@@ -35,7 +41,7 @@ app.addHook('preHandler', async (req, res) => {
   }
   if (path === '/api/login') return;
   const session = req.unsignCookie(req.cookies.session ?? '');
-  if (!session.valid || Number(session.value) < Date.now()) return res.code(401).send({ message:'Sign in required' });
+  if (!session.valid || !/^session:\d{13}$/.test(session.value ?? '') || Number(session.value?.slice(8)) <= Date.now()) return res.code(401).send({ message:'Sign in required' });
 });
 
 let denied = 0;
@@ -48,7 +54,7 @@ app.post<{Body:{password?:string}}>('/api/login', async (req,res) => {
     return res.code(401).send({message:'Invalid password'});
   }
   denied=0;
-  return res.setCookie('session', String(Date.now()+86400000), {
+  return res.setCookie('session', 'session:'+(Date.now()+86400000), {
     signed:true,httpOnly:true,sameSite:'strict',secure:process.env.PUBLIC_URL?.startsWith('https:'),path:'/',maxAge:86400
   }).send({ok:true});
 });
@@ -274,14 +280,19 @@ app.post<{Body:{sender:string,remove?:boolean}}>('/api/blocks',async(req,res)=>{
   return {ok:true};
 });
 app.get('/api/integrations',async()=>({
-  keys:(await db.query('SELECT id,name FROM api_keys ORDER BY name')).rows,
+  keys:(await db.query('SELECT id,name,domain FROM api_keys ORDER BY name')).rows,
   hooks:(await db.query('SELECT id,url,filter FROM hooks ORDER BY url')).rows,
   deliveries:(await db.query(`SELECT d.id,d.status,d.attempts,h.url,l.result,l.attempted FROM delivery_log l
     JOIN deliveries d ON d.id=l.delivery JOIN hooks h ON h.id=d.hook ORDER BY l.id DESC LIMIT 100`)).rows
 }));
-app.post<{Body:{name:string}}>('/api/keys',async req=>{
+app.post<{Body:{name:string;domain:string}}>('/api/keys',async (req,res)=>{
+  const domain=req.body?.domain;
+  if(typeof domain!=='string'||!domain)return res.code(400).send({message:'Select a verified domain.'});
   const key='re_'+randomBytes(32).toString('hex');
-  await db.query('INSERT INTO api_keys(name,hash) VALUES($1,$2)',[String(req.body?.name||'API key').slice(0,120),digest(key)]);
+  const result=await db.query(`INSERT INTO api_keys(name,hash,domain)
+    SELECT $1,$2,name FROM domains WHERE name=$3 AND verified AND removed_at IS NULL`,
+    [String(req.body?.name||'API key').slice(0,120),digest(key),domain]);
+  if(!result.rowCount)return res.code(422).send({message:'Select a verified domain.'});
   return {secret:key};
 });
 app.post<{Body:{url:string,filter?:string}}>('/api/hooks',async(req,res)=>{
@@ -289,7 +300,7 @@ app.post<{Body:{url:string,filter?:string}}>('/api/hooks',async(req,res)=>{
   try { url=new URL(req.body?.url); if(url.protocol!=='https:'||url.username||url.password) throw Error(); }
   catch{return res.code(400).send({message:'Enter a public HTTPS URL'});}
   const secret='whsec_'+randomBytes(32).toString('base64');
-  await db.query('INSERT INTO hooks(url,secret,filter) VALUES($1,$2,$3)',[url.href,secret,String(req.body.filter??'').trim().toLowerCase()]);
+  await db.query('INSERT INTO hooks(url,secret,filter) VALUES($1,$2,$3)',[url.href,encryptSecret(secret,'webhook'),String(req.body.filter??'').trim().toLowerCase()]);
   return {secret};
 });
 app.delete<{Params:{type:string,id:string}}>('/api/integrations/:type/:id',async(req,res)=>{
@@ -315,54 +326,81 @@ app.get('/api/health',async()=>{
   };
 });
 
-const wire = "id,sender AS \"from\",ARRAY[recipient] AS \"to\",subject,received AS created_at,ARRAY[]::text[] AS cc,ARRAY[]::text[] AS bcc,message_id";
+const wire = "m.id,sender AS \"from\",ARRAY[recipient] AS \"to\",subject,received AS created_at,ARRAY[]::text[] AS cc,ARRAY[]::text[] AS bcc,message_id";
 const list = (rows:unknown[],limit:number) => ({object:'list',data:rows.slice(0,limit),has_more:rows.length>limit});
 function pagination(q:Record<string,string>) {
   return {limit:Math.max(1,Math.min(100,Math.trunc(Number(q.limit)||20))), cursor:uuid.test(q.after||q.before||'')?q.after||q.before:null, before:!!q.before};
 }
+const visible = `m.state='ready' AND m.folder<>'trash' AND EXISTS (
+  SELECT 1 FROM domains d WHERE d.name=m.domain
+  AND (d.retention_days IS NULL OR m.received >= now()-make_interval(days => d.retention_days))
+)`;
+const notFound = (message:string) => ({name:'not_found',statusCode:404,message});
 app.get<{Querystring:Record<string,string>}>('/emails/receiving',async req=>{
+  const {domain}=apiScope.get(req)!;
   const {limit,cursor,before}=pagination(req.query);
-  const {rows}=await db.query(`SELECT ${wire} FROM messages WHERE state='ready'
-    AND ($1::uuid IS NULL OR (received,id) ${before?'>':'<'} (SELECT received,id FROM messages WHERE id=$1))
-    ORDER BY received ${before?'ASC':'DESC'},id ${before?'ASC':'DESC'} LIMIT $2`,[cursor,limit+1]);
+  const {rows}=await db.query(`SELECT ${wire} FROM messages m WHERE m.domain=$3 AND ${visible}
+    AND ($1::uuid IS NULL OR (m.received,m.id) ${before?'>':'<'} (
+      SELECT m.received,m.id FROM messages m WHERE m.id=$1 AND m.domain=$3 AND ${visible}))
+    ORDER BY m.received ${before?'ASC':'DESC'},m.id ${before?'ASC':'DESC'} LIMIT $2`,[cursor,limit+1,domain]);
   const result=list(rows,limit);
   if(before) result.data.reverse();
   return result;
 });
 app.get<{Params:{id:string}}>('/emails/receiving/:id',async(req,res)=>{
-  const {rows:[row]}=uuid.test(req.params.id)?await db.query(`SELECT ${wire},html,body AS text,headers FROM messages WHERE id=$1 AND state='ready'`,[req.params.id]):{rows:[]};
-  if(!row) return res.code(404).send({name:'not_found',statusCode:404,message:'Email not found'});
+  const {domain}=apiScope.get(req)!;
+  const {rows:[row]}=uuid.test(req.params.id)?await db.query(`SELECT ${wire},html,body AS text,headers
+    FROM messages m WHERE m.id=$1 AND m.domain=$2 AND ${visible}`,[req.params.id,domain]):{rows:[]};
+  if(!row) return res.code(404).send(notFound('Email not found'));
   const {rows}=await db.query('SELECT id,filename,mime AS content_type FROM attachments WHERE message=$1',[row.id]);
   return {object:'email',...row,attachments:rows};
 });
-const attachmentWire="id,filename,mime AS content_type,octet_length(data) AS size,'attachment' AS content_disposition,NULL AS content_id";
+const attachmentWire="a.id,a.filename,a.mime AS content_type,octet_length(a.data) AS size,'attachment' AS content_disposition,NULL AS content_id";
 app.get<{Params:{id:string},Querystring:Record<string,string>}>('/emails/receiving/:id/attachments',async(req,res)=>{
-  if(!uuid.test(req.params.id))return res.code(404).send({name:'not_found',statusCode:404,message:'Email not found'});
+  if(!uuid.test(req.params.id))return res.code(404).send(notFound('Email not found'));
+  const {domain}=apiScope.get(req)!;
   const {limit,cursor,before}=pagination(req.query);
-  const {rows}=await db.query(`SELECT ${attachmentWire} FROM attachments WHERE message=$1
-    AND ($2::uuid IS NULL OR id ${before?'>':'<'} $2) ORDER BY id ${before?'ASC':'DESC'} LIMIT $3`,[req.params.id,cursor,limit+1]);
+  const {rows}=await db.query(`SELECT ${attachmentWire} FROM attachments a JOIN messages m ON m.id=a.message
+    WHERE m.id=$1 AND m.domain=$4 AND ${visible}
+    AND ($2::uuid IS NULL OR a.id ${before?'>':'<'} $2) ORDER BY a.id ${before?'ASC':'DESC'} LIMIT $3`,[req.params.id,cursor,limit+1,domain]);
   const result=list(rows,limit);
   if(before)result.data.reverse();
   return result;
 });
 app.get<{Params:{id:string,attachment:string}}>('/emails/receiving/:id/attachments/:attachment',async(req,res)=>{
   const {id,attachment}=req.params;
-  const {rows:[row]}=uuid.test(id)&&uuid.test(attachment)?await db.query(`SELECT ${attachmentWire} FROM attachments WHERE message=$1 AND id=$2`,[id,attachment]):{rows:[]};
-  if(!row)return res.code(404).send({name:'not_found',statusCode:404,message:'Attachment not found'});
+  const key=apiScope.get(req)!;
+  const {rows:[row]}=uuid.test(id)&&uuid.test(attachment)?await db.query(`SELECT ${attachmentWire}
+    FROM attachments a JOIN messages m ON m.id=a.message
+    WHERE m.id=$1 AND a.id=$2 AND m.domain=$3 AND ${visible}`,[id,attachment,key.domain]):{rows:[]};
+  if(!row)return res.code(404).send(notFound('Attachment not found'));
   const ttl=Date.now()+900000;
-  const token=app.signCookie(attachment+':'+ttl);
+  const token=downloads.sign(attachment+':'+key.id+':'+ttl);
   return {object:'attachment',...row,expires_at:new Date(ttl).toISOString(),download_url:process.env.PUBLIC_URL+'/download/'+encodeURIComponent(token)};
 });
 app.get<{Params:{token:string}}>('/download/:token',async(req,res)=>{
-  const token=app.unsignCookie(req.params.token);
-  const [id,expires]=token.value?.split(':')??[];
-  if(!token.valid||!uuid.test(id)||Number(expires)<=Date.now())return res.code(404).send();
-  const {rows:[row]}=await db.query('SELECT filename,data FROM attachments WHERE id=$1',[id]);
+  const token=downloads.unsign(req.params.token);
+  const [id,key,expires]=token.value?.split(':')??[];
+  if(!token.valid||!uuid.test(id)||!uuid.test(key)||!/^\d{13}$/.test(expires)||Number(expires)<=Date.now())return res.code(404).send();
+  const {rows:[row]}=await db.query(`SELECT a.filename,a.data FROM attachments a JOIN messages m ON m.id=a.message
+    JOIN api_keys k ON k.id=$2 AND k.domain=m.domain WHERE a.id=$1 AND ${visible}`,[id,key]);
   if(!row)return res.code(404).send();
   return res.header('Cache-Control','no-store').header('Content-Disposition',safeName(row.filename)).type('application/octet-stream').send(row.data);
 });
 
 await migrate();
+const migration = await db.connect();
+try {
+  await migration.query('BEGIN');
+  const {rows} = await migration.query("SELECT id,secret FROM hooks WHERE starts_with(secret,'whsec_') FOR UPDATE");
+  for(const hook of rows) {
+    await migration.query('UPDATE hooks SET secret=$2 WHERE id=$1',[hook.id,encryptSecret(hook.secret,'webhook')]);
+  }
+  await migration.query('COMMIT');
+} catch(error) {
+  await migration.query('ROLLBACK');
+  throw error;
+} finally { migration.release(); }
 await app.listen({port:Number(process.env.PORT||3000),host:'0.0.0.0'});
 async function tick() {
   await runJobs();

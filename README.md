@@ -98,3 +98,38 @@ to save a zone-scoped token from the dashboard. The server validates the token
 with Cloudflare and encrypts it in PostgreSQL using `SESSION_SECRET`. Keep that
 secret with the backup. An environment token takes precedence. Disconnecting
 the dashboard token removes Letterdock's saved credential.
+
+## Inbound safety limits and API keys
+
+The Worker rejects messages over 20 MiB. Letterdock imports up to 512 MiB of
+raw mail per domain per rolling 24 hours by default. Mail over this allowance
+is discarded at import and recorded as `domain_quota` in Health. Because
+Cloudflare accepts mail before Letterdock imports it, that quota does not
+generate a sender bounce.
+
+The importer defers new mail in staging when the estimated database usage
+would exceed 10 GiB or free storage would fall below 1 GiB. Set
+`INBOUND_DOMAIN_DAILY_BYTES`, `INBOUND_DATABASE_BYTES`, and
+`INBOUND_MIN_FREE_BYTES` in `.env` to tune these thresholds. If Postgres is on
+a separate storage mount, set `DISK_PATH` to a path on that filesystem
+accessible to the app. Managed Cloudflare staging expires unimported objects
+after seven days. For a manually managed bucket, configure a lifecycle rule
+for the `mail/` prefix.
+
+API keys are limited to one verified domain when created. Older unscoped keys
+are disabled. Create replacement keys in Integrations and update their
+consumers. Trash and expired mail are excluded from the API and attachment
+downloads. Webhook signing secrets are encrypted on startup using a key
+derived from `SESSION_SECRET`; preserve that secret across upgrades.
+
+For installations with an existing managed Cloudflare Worker, run the
+following after upgrading to refresh the Worker and staging lifecycle.
+Use the same Compose files used for deployment.
+
+```sh
+docker compose exec -T app node --import tsx --input-type=module -e '
+  import { refreshManagedIngress } from "./src/cloudflare-ingress.ts";
+  import { db } from "./src/db.ts";
+  try { await refreshManagedIngress(); } finally { await db.end(); }
+'
+```

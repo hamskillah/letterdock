@@ -1,34 +1,69 @@
 import { createHmac } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
+import { statfs } from 'node:fs/promises';
 import { request } from 'node:https';
 import { BlockList } from 'node:net';
 import { S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { simpleParser } from 'mailparser';
 import sanitize from 'sanitize-html';
 import { managedIngress } from './cloudflare-ingress.js';
+import { decryptSecret } from './cloudflare.js';
 import { db } from './db.js';
 
 const bucket = process.env.R2_BUCKET;
 const s3 = bucket ? new S3Client({ region: 'auto', endpoint: process.env.R2_ENDPOINT }) : null;
 
+const maxMessageBytes = 20 * 1024 ** 2;
+function positiveLimit(name: string, fallback: number) {
+  const limit = Number(process.env[name] ?? fallback);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw Error(name+' must be a positive integer');
+  return limit;
+}
+const dailyDomainBytes = positiveLimit('INBOUND_DOMAIN_DAILY_BYTES', 512 * 1024 ** 2);
+const maxDatabaseBytes = positiveLimit('INBOUND_DATABASE_BYTES', 10 * 1024 ** 3);
+const minFreeBytes = positiveLimit('INBOUND_MIN_FREE_BYTES', 1024 ** 3);
+
 export async function importMail(id: string, from: string, to: string, raw: Uint8Array) {
   const recipient = to.toLowerCase();
   const domain = recipient.slice(recipient.lastIndexOf('@') + 1);
-  await db.query(`
-    WITH decision AS (
-      SELECT CASE WHEN NOT EXISTS (SELECT FROM domains WHERE name=$2 AND verified AND removed_at IS NULL) THEN 'unknown_domain'
-             WHEN EXISTS (SELECT FROM blocks WHERE sender=lower($3)) THEN 'blocked' ELSE 'stored' END AS status
-    ), logged AS (
-      INSERT INTO ingest_log(id, recipient, status) SELECT $1,$4,status FROM decision
-      ON CONFLICT DO NOTHING RETURNING status
-    ), stored AS (
-      INSERT INTO messages(id,domain,sender,recipient,raw)
-      SELECT $1,$2,$3,$4,$5 FROM logged WHERE status='stored' RETURNING recipient
-    ), updated AS (
-      UPDATE domains SET last_received=now() WHERE name=$2 AND EXISTS (SELECT FROM stored)
-    )
-    INSERT INTO inboxes(address) SELECT recipient FROM stored ON CONFLICT DO NOTHING
-  `, [id, domain, from, recipient, Buffer.from(raw)]);
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('letterdock-ingest'))");
+    const disk = await statfs(process.env.DISK_PATH || '.');
+    const {rows:[outcome]} = await client.query(`
+      WITH pending AS (
+        SELECT coalesce(sum(octet_length(raw)),0) * 3 AS promised FROM messages WHERE state='pending'
+      ), decision AS (
+        SELECT CASE WHEN NOT EXISTS (SELECT FROM domains WHERE name=$2 AND verified AND removed_at IS NULL) THEN 'unknown_domain'
+          WHEN EXISTS (SELECT FROM blocks WHERE sender=lower($3)) THEN 'blocked'
+          WHEN $6::bigint > $7 THEN 'message_too_large'
+          WHEN $6::bigint + (SELECT coalesce(sum(bytes),0) FROM ingest_log
+            WHERE domain=$2 AND status='stored' AND time >= now()-interval '24 hours') > $8 THEN 'domain_quota'
+          WHEN pg_database_size(current_database()) + promised + $6::bigint*4 > $9
+            OR $10::bigint-promised-$6::bigint*4 < $11 THEN 'storage_quota'
+          ELSE 'stored' END AS status FROM pending
+      ), logged AS (
+        INSERT INTO ingest_log(id,recipient,status,domain,bytes) SELECT $1,$4,status,$2,$6 FROM decision
+        ON CONFLICT(id) DO UPDATE SET status=excluded.status,time=now()
+          WHERE ingest_log.status='storage_quota' RETURNING status
+      ), stored AS (
+        INSERT INTO messages(id,domain,sender,recipient,raw)
+        SELECT $1,$2,$3,$4,$5 FROM logged WHERE status='stored' RETURNING recipient
+      ), updated AS (
+        UPDATE domains SET last_received=now() WHERE name=$2 AND EXISTS (SELECT FROM stored)
+      ), inbox AS (
+        INSERT INTO inboxes(address) SELECT recipient FROM stored ON CONFLICT DO NOTHING
+      )
+      SELECT status FROM logged
+    `, [id,domain,from,recipient,raw.byteLength<=maxMessageBytes?Buffer.from(raw):null,raw.byteLength,
+      maxMessageBytes,dailyDomainBytes,maxDatabaseBytes,disk.bavail*disk.bsize,minFreeBytes]);
+    await client.query('COMMIT');
+    return outcome?.status !== 'storage_quota';
+  } catch(error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
 }
 
 export const stagingStatus = {
@@ -67,7 +102,10 @@ async function pullManaged() {
       const name=recipient.split('@').at(-1)?.toLowerCase();
       const state=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[name]);
       if(state.rows[0]&&!state.rows[0].verified&&!state.rows[0].removed_at){await item.body?.cancel();continue;}
-      await importMail(key.slice(5),decodeURIComponent(from),recipient,new Uint8Array(await item.arrayBuffer()));
+      if (!await importMail(key.slice(5),decodeURIComponent(from),recipient,new Uint8Array(await item.arrayBuffer()))) {
+        stagingStatus.error=true;
+        continue;
+      }
       const deleted=await get('/'+key,'DELETE');
       if(!deleted.ok)throw Error('Staging acknowledgement failed');
     } catch(error){stagingStatus.error=true;console.error('Managed import failed',key,error);}
@@ -88,7 +126,10 @@ async function pull() {
     try {
       const item = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
       if (!item.Body || !item.Metadata?.to || item.Metadata.from === undefined) throw Error('Missing envelope');
-      await importMail(key.slice(5), item.Metadata.from, item.Metadata.to, await item.Body.transformToByteArray());
+      if (!await importMail(key.slice(5), item.Metadata.from, item.Metadata.to, await item.Body.transformToByteArray())) {
+        stagingStatus.error=true;
+        continue;
+      }
       await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     } catch (error) { stagingStatus.error = true; console.error('Import failed', key, error); }
   }
@@ -162,7 +203,7 @@ async function deliver() {
         subject:job.subject, created_at:job.received, message_id:job.message_id, attachments:attachments.rows
       } });
       const timestamp = String(Math.floor(Date.now()/1000));
-      const sig = createHmac('sha256', Buffer.from(job.secret.slice(6), 'base64')).update(job.id+'.'+timestamp+'.'+body).digest('base64');
+      const sig = createHmac('sha256', Buffer.from(decryptSecret(job.secret,'webhook').slice(6), 'base64')).update(job.id+'.'+timestamp+'.'+body).digest('base64');
       let result: string;
       let success = false;
       try {
@@ -187,6 +228,7 @@ export async function runJobs() {
     pull().catch(error => { stagingStatus.error = true; continuation = undefined; throw error; }),
     (async () => { for (let n=0; n<25 && await parseNext(); n++) { /* drain bounded batch */ } })(),
     deliver(),
+    db.query("DELETE FROM ingest_log WHERE time < now()-interval '30 days' AND status <> 'stored'"),
     db.query(`UPDATE messages m SET folder='trash' FROM domains d
       WHERE m.domain=d.name AND d.retention_days IS NOT NULL AND m.folder<>'trash'
       AND m.received < now()-make_interval(days => d.retention_days)`)
