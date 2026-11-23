@@ -95,3 +95,33 @@ dialog img{display:block;max-width:80vw;max-height:75vh;margin-top:.5rem}
 .mobile{display:none}
 @media(max-width:900px){.app{grid-template-columns:11rem minmax(0,1fr)}.mail-layout{grid-template-columns:minmax(14rem,18rem) minmax(0,1fr)}}
 @media(max-width:700px){.app{grid-template-columns:minmax(0,1fr)}.sidebar{display:none}.show-nav .sidebar{display:flex;position:fixed;inset:0 auto 0 0;width:min(18rem,92vw);z-index:2;box-shadow:0 0 0 100vmax #16261d55}.mobile{display:inline-flex}.brand .mobile{margin-left:auto}.mail-layout{grid-template-columns:minmax(0,1fr)}.message-list{border-right:0}.reader{display:none}.show-detail .message-list{display:none}.show-detail .reader{display:block}.topbar{padding-inline:.7rem}.reader-actions{gap:.35rem}}
+
+/* Shared workspace identity and domain management */
+.brand-mark{display:block;background:none;border-radius:0;flex:none}
+.settings-heading{display:flex;gap:.85rem;align-items:center}
+.settings-heading p{margin-top:.25rem}
+.section-icon{display:grid;place-items:center;width:2.75rem;height:2.75rem;border:1px solid #d6e4d8;background:#edf4eb;border-radius:10px;color:var(--green);flex:none}
+.domains-page{max-width:59rem;gap:1.15rem}
+.domain-add{padding:1rem;border:1px solid var(--line);border-radius:12px;background:#f7f9f5}
+.domain-add label{flex:1;max-width:25rem;min-width:min(13rem,100%)}
+.domain-card{display:grid;gap:.9rem;padding:1rem;border:1px solid var(--line);border-radius:12px;overflow-wrap:anywhere}
+.domain-title,.dns-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem}
+.domain-title h2{margin-bottom:.42rem}
+.dns-panel{padding:.8rem;background:#f6f8f4;border-radius:8px}
+.dns-heading{align-items:center}
+.dns-heading h3{font-size:.9rem}
+.dns-data{display:grid;grid-template-columns: minmax(0,8rem) minmax(0,1fr);gap:.5rem;font-size:.84rem}
+.dns-data dt{color:var(--muted)}
+.dns-data dd{margin:0}
+.dns-panel p,.domain-card details{font-size:.84rem}
+.domain-card summary{cursor:pointer;width:fit-content;color:var(--muted)}
+.domain-card details[open] summary{margin-bottom:.45rem}
+button:disabled{cursor:default;opacity:.55}
+button:disabled:hover{background:inherit}
+button.primary:disabled:hover{background:var(--green)}
+.danger{color:#98342d}
+.danger-action{background:#a32a27;border-color:#a32a27;color:white}
+.danger-action:hover{background:#85221f}
+.remove-dialog{width:min(29rem,calc(100% - 2rem));padding:1.35rem}
+.remove-dialog p{margin:.75rem 0 1.25rem;line-height:1.55}
+.remove-dialog form{justify-content:flex-end}

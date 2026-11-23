@@ -111,16 +111,16 @@ app.get<{Params:{id:string}}>('/api/files/:id',async(req,res)=>{
   if(!row) return res.code(404).send();
   return res.header('Content-Disposition',safeName(row.filename)).type('application/octet-stream').send(row.data);
 });
-app.get('/api/domains',async()=> (await db.query('SELECT * FROM domains ORDER BY name')).rows);
+app.get('/api/domains',async()=> (await db.query('SELECT name,token,verified,last_received,retention_days FROM domains WHERE removed_at IS NULL ORDER BY name')).rows);
 app.post<{Body:{name:string}}>('/api/domains',async(req,res)=>{
   const name=domainToASCII(String(req.body?.name??'').trim().toLowerCase());
   if(!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/.test(name)||name.length>253) return res.code(400).send({message:'Enter a valid domain'});
-  await db.query('INSERT INTO domains(name) VALUES($1) ON CONFLICT DO NOTHING',[name]);
+  await db.query('INSERT INTO domains(name) VALUES($1) ON CONFLICT(name) DO UPDATE SET removed_at=NULL WHERE domains.removed_at IS NOT NULL',[name]);
   return {ok:true,name};
 });
 app.post<{Params:{name:string},Body:{retention?:number|null}}>('/api/domains/:name',async(req,res)=>{
   const name=req.params.name;
-  const {rows:[domain]}=await db.query('SELECT * FROM domains WHERE name=$1',[name]);
+  const {rows:[domain]}=await db.query('SELECT * FROM domains WHERE name=$1 AND removed_at IS NULL',[name]);
   if(!domain) return res.code(404).send();
   if(req.body && 'retention' in req.body) {
     const days=req.body.retention;
@@ -135,10 +135,18 @@ app.post<{Params:{name:string},Body:{retention?:number|null}}>('/api/domains/:na
   await db.query('UPDATE domains SET verified=true WHERE name=$1',[name]);
   return {ok:true};
 });
+app.delete<{Params:{name:string}}>('/api/domains/:name', async (req,res) => {
+  const removed=await db.query(
+    'UPDATE domains SET removed_at=now(), verified=false, last_received=NULL WHERE name=$1 AND removed_at IS NULL',
+    [req.params.name]
+  );
+  if(!removed.rowCount) return res.code(404).send({message:'Domain not found'});
+  return {ok:true};
+});
 app.route<{Params:{name:string}}>({
   method:['GET','POST'], url:'/api/domains/:name/cloudflare',
   async handler(req,res) {
-    const {rows:[domain]}=await db.query('SELECT name,token FROM domains WHERE name=$1',[req.params.name]);
+    const {rows:[domain]}=await db.query('SELECT name,token FROM domains WHERE name=$1 AND removed_at IS NULL',[req.params.name]);
     if(!domain) return res.code(404).send({message:'Domain not found'});
     try {
       const result=await domainSetup(domain.name,domain.token,req.method==='POST');

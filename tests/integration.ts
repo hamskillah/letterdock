@@ -41,7 +41,7 @@ try {
   const headers={cookie,origin,'content-type':'application/json'};
   const preflight=await fetch(origin+'/api/domains/'+domain+'/cloudflare',{headers}).then(response=>response.json());
   assert.equal(preflight.ready,false);
-  assert.match(preflight.message,/Configure the Cloudflare token/);
+  assert.match(preflight.message,/requires a server-side Cloudflare token/);
   const refused=await fetch(origin+'/api/domains/'+domain+'/cloudflare',{method:'POST',headers,body:'{}'});
   assert.equal(refused.status,409);
   const inboxes=await fetch(origin+'/api/inboxes',{headers}).then(response=>response.json());
@@ -81,9 +81,26 @@ try {
       if(size.width<700)await page.getByRole('button',{name:'Open menu'}).click();
       await page.getByRole('button',{name:'Domains',exact:true}).click();
       await page.getByRole('heading',{name:'Domains',exact:true}).waitFor();
+      await page.getByRole('heading',{name:'DNS records'}).first().waitFor();
+      if(size.width===390){
+        await page.getByRole('button',{name:'Remove '+domain}).click();
+        await page.getByRole('dialog').getByRole('button',{name:'Remove domain'}).click();
+        await page.getByText('Domain removed',{exact:true}).waitFor();
+        assert.equal(await page.getByRole('button',{name:'Remove '+domain}).count(),0);
+      }
       await page.close();
     }
   } finally { await browser.close(); }
+  const retained=await sdk.emails.receiving.get(id);
+  assert.equal(retained.data?.id,id);
+  const ignored=randomUUID();
+  await importMail(ignored,'sender@example.net',recipient,raw);
+  const rejection=await db.query('SELECT status FROM ingest_log WHERE id=$1',[ignored]);
+  assert.equal(rejection.rows[0].status,'unknown_domain');
+  const readded=await fetch(origin+'/api/domains',{method:'POST',headers,body:JSON.stringify({name:domain})});
+  assert.equal(readded.status,200);
+  const restored=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[domain]);
+  assert.deepEqual(restored.rows[0],{verified:false,removed_at:null});
   console.log('Passed: desktop/mobile navigation, login, search, reader and domain view');
   console.log('Passed: catch-all, duplicate ingest, BCC, sanitization, labels/search, SDK and attachment download');
 } finally {

@@ -8,6 +8,7 @@ export async function migrate() {
       name text PRIMARY KEY, token uuid NOT NULL DEFAULT gen_random_uuid(),
       verified boolean NOT NULL DEFAULT false, last_received timestamptz, retention_days integer
     );
+    ALTER TABLE domains ADD COLUMN IF NOT EXISTS removed_at timestamptz;
     CREATE TABLE IF NOT EXISTS messages (
       id uuid PRIMARY KEY, domain text NOT NULL REFERENCES domains(name),
       recipient text NOT NULL, sender text NOT NULL, raw bytea NOT NULL,

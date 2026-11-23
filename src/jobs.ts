@@ -15,7 +15,7 @@ export async function importMail(id: string, from: string, to: string, raw: Uint
   const domain = recipient.slice(recipient.lastIndexOf('@') + 1);
   await db.query(`
     WITH decision AS (
-      SELECT CASE WHEN NOT EXISTS (SELECT FROM domains WHERE name=$2 AND verified) THEN 'unknown_domain'
+      SELECT CASE WHEN NOT EXISTS (SELECT FROM domains WHERE name=$2 AND verified AND removed_at IS NULL) THEN 'unknown_domain'
              WHEN EXISTS (SELECT FROM blocks WHERE sender=lower($3)) THEN 'blocked' ELSE 'stored' END AS status
     ), logged AS (
       INSERT INTO ingest_log(id, recipient, status) SELECT $1,$4,status FROM decision

@@ -1,4 +1,4 @@
-import { resolveMx, resolveNs } from 'node:dns/promises';
+import { resolveMx, resolveNs, resolveTxt } from 'node:dns/promises';
 
 type Action = { type: string; value?: string[] };
 type CatchAll = { enabled: boolean; actions: Action[]; source?: string };
@@ -25,21 +25,31 @@ async function cloudflare<T>(path: string, method = 'GET', body?: unknown): Prom
 }
 
 export async function domainSetup(name: string, token: string, apply = false) {
-  const ns = await resolveNs(name).catch(error => { if (missing(error)) return []; throw error; });
+  const txtName = '_letterdock.' + name;
+  const desiredTxt = 'letterdock=' + token;
+  const [ns,live,publicTxt] = await Promise.all([
+    resolveNs(name).catch(error => { if (missing(error)) return []; throw error; }),
+    resolveMx(name).catch(error => { if (missing(error)) return []; throw error; }),
+    resolveTxt(txtName).catch(error => { if (missing(error)) return []; throw error; })
+  ]);
   const detected = ns.some(server => /\.ns\.cloudflare\.com\.?$/i.test(server));
+  const dns = {
+    nameservers: ns, mx: live.map(record => record.exchange),
+    txtVerified: publicTxt.some(record => record.join('') === desiredTxt)
+  };
+  const result = (ready: boolean, message: string) => ({ detected, ready, message, dns });
+  const externalMx = dns.mx.filter(host => !routingMx.test(host));
+  if (externalMx.length) return result(false, 'Existing mail service detected. MX has been preserved.');
   const worker = process.env.CLOUDFLARE_EMAIL_WORKER;
   if (!process.env.CLOUDFLARE_API_TOKEN || !worker || !process.env.R2_BUCKET) {
-    return { detected, ready: false, message: 'Configure the Cloudflare token, deployed Email Worker and R2 staging first.' };
+    return result(false, 'Automatic setup requires a server-side Cloudflare token, Email Worker and R2 staging.');
   }
 
   const params = new URLSearchParams({ name, status: 'active' });
   const zones = await cloudflare<Zone[]>('/zones?' + params);
-  if (zones.length !== 1) return { detected, ready: false, message: 'An active Cloudflare apex zone with token access is required.' };
+  if (zones.length !== 1) return result(false, 'An active Cloudflare apex zone with token access is required.');
   const base = '/zones/' + zones[0].id;
-  const txtName = '_letterdock.' + name;
-  const desiredTxt = 'letterdock=' + token;
-  const [live, mx, txt, routing, rule] = await Promise.all([
-    resolveMx(name).catch(error => { if (missing(error)) return []; throw error; }),
+  const [mx, txt, routing, rule] = await Promise.all([
     cloudflare<DnsRecord[]>(base + '/dns_records?' + new URLSearchParams({ type: 'MX', name })),
     cloudflare<DnsRecord[]>(base + '/dns_records?' + new URLSearchParams({ type: 'TXT', name: txtName })),
     cloudflare<{ enabled: boolean }>(base + '/email/routing'),
@@ -61,7 +71,7 @@ export async function domainSetup(name: string, token: string, apply = false) {
       name: 'Letterdock', enabled: true, matchers: [{ type: 'all' }], actions: [{ type: 'worker', value: [worker] }]
     });
   }
-  return { detected: true, ready: true, message: apply
+  return result(true, apply
     ? 'Cloudflare configured. Verify DNS once changes propagate, then send a test email.'
-    : 'Ready to add verification TXT, enable Email Routing and connect catch-all to ' + worker + '.' };
+    : 'Ready to add verification TXT, enable Email Routing and connect catch-all to ' + worker + '.');
 }

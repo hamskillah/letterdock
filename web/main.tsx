@@ -6,7 +6,7 @@ import './style.css';
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
 type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;error:string;attachments:{id:string;filename:string;mime:string;bytes:number}[]};
 type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null};
-type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean};
+type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
 type Address = {address:string;name:string;pinned:boolean};
 type Integration = {keys:{id:string;name:string}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
 type Health = {free:number;staging:{configured:boolean;lastChecked:string|null;moreWaiting:boolean;error:boolean};queues:{state:string;count:number;oldest:string}[];ingest:{id:string;recipient:string;status:string;time:string}[];deliveries:{status:string;count:number}[]};
@@ -21,7 +21,7 @@ async function api<T>(path:string, method='GET', data?:unknown): Promise<T> {
 }
 const when=(value:string)=>new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(value));
 const blankFilters={from:'',to:'',subject:'',label:'',since:'',until:'',attachment:''};
-const logo=<span className="brand-mark"><Mail size={19}/></span>;
+const logo=<img className="brand-mark" src="/letterdock.svg" width="36" height="36" alt=""/>;
 
 function App(){
   const [authorized,setAuthorized]=useState<boolean|null>(null);
@@ -33,6 +33,8 @@ function App(){
   const [starOnly,setStarOnly]=useState(false);
   const [unreadOnly,setUnreadOnly]=useState(false);
   const [cloudflare,setCloudflare]=useState<Record<string,CloudflareStatus>>({});
+  const [removing,setRemoving]=useState<string|null>(null);
+  const [domainBusy,setDomainBusy]=useState<Record<string,string>>({});
   const [domains,setDomains]=useState<Domain[]>([]);
   const [addresses,setAddresses]=useState<Address[]>([]);
   const [domain,setDomain]=useState('');
@@ -58,8 +60,13 @@ function App(){
     setError(cause instanceof Error?cause.message:'Something went wrong');
   }
   async function checkCloudflare(name:string,method='GET'){
-    const status=await api<CloudflareStatus>('/domains/'+encodeURIComponent(name)+'/cloudflare',method);
-    setCloudflare(previous=>({...previous,[name]:{...status,applied:method==='POST'}}));
+    setDomainBusy(previous=>({...previous,[name]:method==='POST'?'Applying setup…':'Checking DNS…'}));
+    try {
+      const status=await api<CloudflareStatus>('/domains/'+encodeURIComponent(name)+'/cloudflare',method);
+      setCloudflare(previous=>({...previous,[name]:{...status,applied:method==='POST'||previous[name]?.applied}}));
+    } finally {
+      setDomainBusy(previous=>({...previous,[name]:''}));
+    }
   }
   async function directory(){
     const [registered,inboxes]=await Promise.all([api<Domain[]>('/domains'),api<Address[]>('/inboxes')]);
@@ -141,6 +148,9 @@ function App(){
   }
   async function navigate(next:string){
     setPage(next);setMobileNav(false);setCredential('');setError('');
+    if(next==='Domains')await action(async()=>{
+      await Promise.allSettled(domains.filter(item=>!cloudflare[item.name]).map(item=>checkCloudflare(item.name)));
+    });
     if(next==='Integrations')await action(async()=>setIntegration(await api('/integrations')));
     if(next==='Health')await action(async()=>{
       const [stats,rules]=await Promise.all([api<Health>('/health'),api<{sender:string}[]>('/blocks')]);
@@ -256,23 +266,41 @@ function App(){
           </article>}
         </section>
       </div>}
-      {page==='Domains'&&<section className="settings"><h1>Domains</h1><p>Connect a Cloudflare domain to receive mail at any address.</p>
-        <form className="settings-form" onSubmit={e=>submit(e,async data=>{
+      {page==='Domains'&&<section className="settings domains-page">
+        <header className="settings-heading"><span className="section-icon"><Globe size={21}/></span><div><h1>Domains</h1><p>Connect domains you own and receive mail at any address.</p></div></header>
+        <form className="settings-form domain-add" onSubmit={e=>submit(e,async data=>{
           const {name}=await api<{name:string}>('/domains','POST',{name:data.get('name')});
           await directory();
           await checkCloudflare(name);
-        })}><label>Domain<input name="name" placeholder="example.com" required/></label><button className="primary">Add domain</button></form>
-        {domains.length===0&&<p className="empty-state">No domains connected yet.</p>}
-        {domains.map(item=><section className="settings-row" key={item.name}><h2>{item.name}</h2><span className={'status '+(item.verified?'ok':'')}>{item.last_received?'Receiving':item.verified?'DNS verified · awaiting test mail':'Setup required'}</span>
-          <div className="compact">
-            <button onClick={()=>void action(()=>checkCloudflare(item.name))}>Check Cloudflare</button>
-            {cloudflare[item.name]?.ready&&!cloudflare[item.name].applied&&<button className="primary" onClick={()=>void action(()=>checkCloudflare(item.name,'POST'))}>Set up Cloudflare</button>}
-          </div>
-          {cloudflare[item.name]&&<p role="status">{cloudflare[item.name].applied?(item.verified?'DNS verified. Send a test email.':'Waiting for DNS. Letterdock will retry automatically.'):cloudflare[item.name].message}</p>}
-          <details><summary>Manual setup</summary><ol><li>Add TXT <code>_letterdock.{item.name}</code> with value <code>letterdock={item.token}</code>.</li><li>Enable Email Routing in Cloudflare. Review existing MX records before authorizing any change.</li><li>Set catch-all action to your Letterdock Worker, verify DNS, then send a test message from an external mailbox.</li></ol></details>
-          {item.last_received&&<p>Last received {when(item.last_received)}</p>}
-          <div className="compact"><button onClick={()=>void action(async()=>{await api('/domains/'+item.name,'POST');await refresh();},'DNS verified')}>Verify DNS</button>
-          <form className="compact" onSubmit={e=>submit(e,data=>api('/domains/'+item.name,'POST',{retention:data.get('days')?Number(data.get('days')):null}))}><label>Retention days<input name="days" type="number" min="1" max="3650" defaultValue={item.retention_days??''} placeholder="Keep indefinitely"/></label><button>Save</button></form></div></section>)}
+        })}><label>Domain name<input name="name" placeholder="example.com" required/></label><button className="primary">Add domain <ArrowUpRight size={15}/></button></form>
+        {domains.length===0&&<div className="domain-empty"><Globe size={22}/><h2>No domains connected</h2><p>Add a domain to check its DNS and set up inbound mail.</p></div>}
+        {domains.map(item=>{
+          const check=cloudflare[item.name];
+          const busy=domainBusy[item.name];
+          return <section className="domain-card" key={item.name}>
+            <div className="domain-title"><div><h2>{item.name}</h2><span className={'status '+(item.verified?'ok':'')}>{item.last_received?'Receiving':item.verified?'DNS verified':'Setup required'}</span></div>
+            <button className="icon danger" type="button" aria-label={'Remove '+item.name} onClick={()=>setRemoving(item.name)}><Trash2 size={17}/></button></div>
+            <div className="dns-panel">
+              <div className="dns-heading"><h3>DNS records</h3><button disabled={Boolean(busy)} onClick={()=>void action(()=>checkCloudflare(item.name))}>Check DNS</button></div>
+              {busy&&<p role="status">{busy}</p>}
+              {check&&<><dl className="dns-data">
+                <dt>Nameservers</dt><dd>{check.detected&&<strong>Cloudflare · </strong>}{check.dns.nameservers.join(', ')||'None found'}</dd>
+                <dt>MX</dt><dd>{check.dns.mx.join(', ')||'No MX records found'}</dd>
+                <dt>Verification TXT</dt><dd>{check.dns.txtVerified?'Verified':'Pending'}</dd>
+              </dl>
+              <p role="status">{check.applied?(item.verified?'DNS verified. Send a test email.':'Waiting for DNS. Letterdock will retry automatically.'):check.message}</p></>}
+            </div>
+            <div className="compact domain-actions">
+              <button className="primary" disabled={!check?.ready||Boolean(busy)||Boolean(check.applied)} onClick={()=>void action(()=>checkCloudflare(item.name,'POST'))}>Set up Cloudflare</button>
+              <button onClick={()=>void action(async()=>{await api('/domains/'+item.name,'POST');await refresh();},'DNS verified')}>Verify DNS</button>
+            </div>
+            <details><summary>Manual setup and retention</summary>
+              <ol><li>Add TXT <code>_letterdock.{item.name}</code> with value <code>letterdock={item.token}</code>.</li><li>Enable Email Routing in Cloudflare and point the catch-all to your Letterdock Worker.</li><li>Verify DNS, then send a test email.</li></ol>
+              {item.last_received&&<p>Last received {when(item.last_received)}</p>}
+              <form className="settings-form" onSubmit={e=>submit(e,data=>api('/domains/'+item.name,'POST',{retention:data.get('days')?Number(data.get('days')):null}))}><label>Retention days<input name="days" type="number" min="1" max="3650" defaultValue={item.retention_days??''} placeholder="Keep indefinitely"/></label><button>Save</button></form>
+            </details>
+          </section>;
+        })}
       </section>}
       {page==='Integrations'&&<section className="settings"><h1>Integrations</h1>
         {credential&&<div className="secret"><strong>Copy this secret now</strong><code>{credential}</code><button onClick={()=>void action(()=>navigator.clipboard.writeText(credential),'Copied')}>Copy</button><button onClick={()=>setCredential('')}>Dismiss</button></div>}
@@ -294,6 +322,18 @@ function App(){
         {blocks.map(item=><div className="settings-row compact" key={item.sender}><span>{item.sender}</span><button onClick={()=>void action(async()=>{await api('/blocks','POST',{sender:item.sender,remove:true});await refresh();})}>Unblock</button></div>)}
       </section>}
     </main>
+    {removing&&<dialog className="remove-dialog" aria-labelledby="remove-title" ref={element=>{if(element&&!element.open)element.showModal();}} onClose={()=>setRemoving(null)}>
+      <h2 id="remove-title">Remove {removing}?</h2>
+      <p>Letterdock stops accepting new messages for this domain. Existing messages and Cloudflare records stay in place.</p>
+      <form method="dialog" className="compact">
+        <button autoFocus>Cancel</button>
+        <button type="button" className="danger-action" onClick={()=>void action(async()=>{
+          await api('/domains/'+encodeURIComponent(removing),'DELETE');
+          setCloudflare(previous=>Object.fromEntries(Object.entries(previous).filter(([name])=>name!==removing)));
+          setRemoving(null);await refresh();
+        },'Domain removed')}>Remove domain</button>
+      </form>
+    </dialog>}
     {preview&&<dialog ref={element=>{if(element&&!element.open)element.showModal();}} onClose={()=>{URL.revokeObjectURL(preview.url);setPreview(null);}}><form method="dialog"><button aria-label="Close attachment preview"><X size={19}/></button></form><img src={preview.url} alt={preview.name}/></dialog>}
   </div>;
 }
