@@ -4,6 +4,7 @@ export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 export async function migrate() {
   await db.query(`
+    CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value text NOT NULL);
     CREATE TABLE IF NOT EXISTS domains (
       name text PRIMARY KEY, token uuid NOT NULL DEFAULT gen_random_uuid(),
       verified boolean NOT NULL DEFAULT false, last_received timestamptz, retention_days integer

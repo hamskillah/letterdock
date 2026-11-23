@@ -5,7 +5,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolveMx, resolveTxt } from 'node:dns/promises';
 import { resolve } from 'node:path';
 import { domainToASCII } from 'node:url';
-import { domainSetup, SetupConflict } from './cloudflare.js';
+import { connectCloudflare, connectionStatus, domainSetup, SetupConflict } from './cloudflare.js';
 import { db, migrate } from './db.js';
 import { runJobs, stagingStatus } from './jobs.js';
 
@@ -110,6 +110,22 @@ app.get<{Params:{id:string}}>('/api/files/:id',async(req,res)=>{
   const {rows:[row]}=await db.query('SELECT filename,data FROM attachments WHERE id=$1',[req.params.id]);
   if(!row) return res.code(404).send();
   return res.header('Content-Disposition',safeName(row.filename)).type('application/octet-stream').send(row.data);
+});
+app.get('/api/cloudflare', async () => connectionStatus());
+app.post<{Body:{token:string}}>('/api/cloudflare', async (req,res) => {
+  if (process.env.CLOUDFLARE_API_TOKEN) return res.code(409).send({message:'The Cloudflare token is managed by the server environment.'});
+  const token=String(req.body?.token??'').trim();
+  if (!/^[a-zA-Z0-9_-]{20,256}$/.test(token)) return res.code(400).send({message:'Enter a valid Cloudflare API token.'});
+  try { await connectCloudflare(token); return connectionStatus(); }
+  catch(error) {
+    if (error instanceof SetupConflict) return res.code(422).send({message:error.message});
+    return res.code(502).send({message:'Could not connect to Cloudflare. Try again.'});
+  }
+});
+app.delete('/api/cloudflare', async (_req,res) => {
+  if (process.env.CLOUDFLARE_API_TOKEN) return res.code(409).send({message:'The Cloudflare token is managed by the server environment.'});
+  await db.query("DELETE FROM settings WHERE key='cloudflare_token'");
+  return connectionStatus();
 });
 app.get('/api/domains',async()=> (await db.query('SELECT name,token,verified,last_received,retention_days FROM domains WHERE removed_at IS NULL ORDER BY name')).rows);
 app.post<{Body:{name:string}}>('/api/domains',async(req,res)=>{

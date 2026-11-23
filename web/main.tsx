@@ -6,6 +6,7 @@ import './style.css';
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
 type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;error:string;attachments:{id:string;filename:string;mime:string;bytes:number}[]};
 type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null};
+type CloudflareConnection = {configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
 type Address = {address:string;name:string;pinned:boolean};
 type Integration = {keys:{id:string;name:string}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
@@ -32,6 +33,8 @@ function App(){
   const [folder,setFolder]=useState('inbox');
   const [starOnly,setStarOnly]=useState(false);
   const [unreadOnly,setUnreadOnly]=useState(false);
+  const [connection,setConnection]=useState<CloudflareConnection|null>(null);
+  const [connecting,setConnecting]=useState(false);
   const [cloudflare,setCloudflare]=useState<Record<string,CloudflareStatus>>({});
   const [removing,setRemoving]=useState<string|null>(null);
   const [domainBusy,setDomainBusy]=useState<Record<string,string>>({});
@@ -149,6 +152,7 @@ function App(){
   async function navigate(next:string){
     setPage(next);setMobileNav(false);setCredential('');setError('');
     if(next==='Domains')await action(async()=>{
+      setConnection(await api<CloudflareConnection>('/cloudflare'));
       await Promise.allSettled(domains.filter(item=>!cloudflare[item.name]).map(item=>checkCloudflare(item.name)));
     });
     if(next==='Integrations')await action(async()=>setIntegration(await api('/integrations')));
@@ -268,6 +272,43 @@ function App(){
       </div>}
       {page==='Domains'&&<section className="settings domains-page">
         <header className="settings-heading"><span className="section-icon"><Globe size={21}/></span><div><h1>Domains</h1><p>Connect domains you own and receive mail at any address.</p></div></header>
+        {connection&&<section className="domain-card connection-card" aria-labelledby="cloudflare-connection">
+          <div className="domain-title"><div><h2 id="cloudflare-connection">Cloudflare connection</h2>
+            <p>Connect once to set up DNS and catch-all from Letterdock.</p></div>
+            <span className={'status '+(connection.configured?'ok':'')}>{connection.configured?'Token connected':'Token required'}</span>
+          </div>
+          <dl className="connection-checks">
+            <div><dt>API access</dt><dd>{connection.configured?'Configured':'Connect a scoped token'}</dd></div>
+            <div><dt>Email Worker</dt><dd>{connection.workerConfigured?'Configured':'Deploy Worker'}</dd></div>
+            <div><dt>Private R2 staging</dt><dd>{connection.stagingConfigured?'Configured':'Configure R2'}</dd></div>
+          </dl>
+          {!connection.fromEnvironment&&<details>
+            <summary>{connection.configured?'Manage token':'Connect Cloudflare'}</summary>
+            <p>Create a token scoped to your inbound zones with Zone Read, DNS Edit, Zone Settings Edit, and Email Routing Rules Edit.</p>
+            <a className="button" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Open Cloudflare API Tokens <ArrowUpRight size={14}/></a>
+            <form className="settings-form token-form" onSubmit={event=>{
+              event.preventDefault();
+              const form=event.currentTarget;
+              const token=new FormData(form).get('token');
+              void action(async()=>{
+                setConnecting(true);
+                try {
+                  setConnection(await api<CloudflareConnection>('/cloudflare','POST',{token}));
+                  form.reset();
+                  await Promise.allSettled(domains.map(item=>checkCloudflare(item.name)));
+                } finally {setConnecting(false);}
+              },'Cloudflare connected');
+            }}>
+              <label>Cloudflare API token<input name="token" type="password" autoComplete="off" required minLength={20} maxLength={256}/></label>
+              <button className="primary" disabled={connecting}>{connecting?'Connecting…':connection.configured?'Replace token':'Save connection'}</button>
+              {connection.configured&&<button type="button" disabled={connecting} onClick={()=>void action(async()=>{
+                setConnection(await api<CloudflareConnection>('/cloudflare','DELETE'));
+                setCloudflare({});
+              },'Cloudflare disconnected')}>Disconnect</button>}
+            </form>
+          </details>}
+          {(!connection.workerConfigured||!connection.stagingConfigured)&&<p className="setup-hint">Deploy the Worker and configure R2 once on the server. <a href="https://github.com/hamskillah/letterdock#receive-mail" target="_blank" rel="noreferrer">Deployment guide</a></p>}
+        </section>}
         <form className="settings-form domain-add" onSubmit={e=>submit(e,async data=>{
           const {name}=await api<{name:string}>('/domains','POST',{name:data.get('name')});
           await directory();

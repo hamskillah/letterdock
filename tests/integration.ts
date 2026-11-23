@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
 import { Resend } from 'resend';
+import { cloudflareToken, connectCloudflare } from '../src/cloudflare.js';
 import { db, migrate } from '../src/db.js';
 import { importMail, parseNext } from '../src/jobs.js';
 
@@ -101,6 +102,24 @@ try {
   assert.equal(readded.status,200);
   const restored=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[domain]);
   assert.deepEqual(restored.rows[0],{verified:false,removed_at:null});
+  process.env.SESSION_SECRET='integration-session-secret-over-32';
+  const testToken='cloudflare_test_token_123456789';
+  const originalFetch=globalThis.fetch;
+  globalThis.fetch=async (input,options)=>{
+    assert.equal(input,'https://api.cloudflare.com/client/v4/zones?per_page=5');
+    assert.equal(new Headers(options?.headers).get('Authorization'),'Bearer '+testToken);
+    return Response.json({success:true,result:[{id:'test-zone',status:'active'}]});
+  };
+  try {await connectCloudflare(testToken);} finally {globalThis.fetch=originalFetch;}
+  assert.equal(await cloudflareToken(),testToken);
+  const encoded=await db.query("SELECT value FROM settings WHERE key='cloudflare_token'");
+  assert(!encoded.rows[0].value.includes(testToken));
+  const status=await fetch(origin+'/api/cloudflare',{headers}).then(response=>response.json());
+  assert.equal(status.configured,true);
+  assert(!JSON.stringify(status).includes(testToken));
+  const disconnect=await fetch(origin+'/api/cloudflare',{method:'DELETE',headers:{cookie,origin}});
+  assert.equal(disconnect.status,200);
+  assert.equal(await cloudflareToken(),undefined);
   console.log('Passed: desktop/mobile navigation, login, search, reader and domain view');
   console.log('Passed: catch-all, duplicate ingest, BCC, sanitization, labels/search, SDK and attachment download');
 } finally {

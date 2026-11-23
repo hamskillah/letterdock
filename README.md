@@ -92,3 +92,9 @@ the preflight, then select **Set up Cloudflare** to create verification TXT,
 enable Email Routing, and route catch-all to the installed Worker. Letterdock
 stops if it sees unrelated MX records or a catch-all owned by another setup.
 Letterdock checks DNS while the Domains page is open. Manual verification is also available. The dashboard can stay on localhost.
+
+On localhost through SSH, open **Domains → Cloudflare connection → Connect Cloudflare**
+to save a zone-scoped token from the dashboard. The server validates the token
+with Cloudflare and encrypts it in PostgreSQL using `SESSION_SECRET`. Keep that
+secret with the backup. An environment token takes precedence. Disconnecting
+the dashboard token removes Letterdock's saved credential.
