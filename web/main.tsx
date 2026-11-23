@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Archive, ArrowLeft, ArrowDownToLine, ArrowUpRight, Boxes, ChevronRight, CircleGauge, Filter, Globe, Inbox, LogOut, Mail, Menu, Paperclip, Search, Star, Trash2, X } from 'lucide-react';
+import { Archive, ArrowLeft, ArrowDownToLine, ArrowUpRight, Boxes, ChevronLeft, ChevronRight, CircleGauge, Filter, Globe, Inbox, LogOut, Mail, Menu, Paperclip, Search, Star, Trash2, X } from 'lucide-react';
 import './style.css';
 
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
@@ -25,7 +25,9 @@ const returningDomain = new URLSearchParams(location.search).get('domainConnect'
 const cloudflareReturn = new URLSearchParams(location.search).get('cloudflare');
 const setupDomain = new URLSearchParams(location.search).get('setupDomain');
 const blankFilters={from:'',to:'',subject:'',label:'',since:'',until:'',attachment:''};
-const logo=<img className="brand-mark" src="/letterdock.svg" width="36" height="36" alt=""/>;
+const senderName=(value:string)=>value.match(/^(.+?)\s*<[^>]+>$/)?.[1].replace(/^"|"$/g,'')||value||'Unknown sender';
+const emailDate=new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric'});
+const logo=<img className="brand-mark" src="/letterdock.png" width="36" height="36" alt=""/>;
 
 function App(){
   const [authorized,setAuthorized]=useState<boolean|null>(null);
@@ -59,12 +61,13 @@ function App(){
   const [selected,setSelected]=useState<string[]>([]);
   const [more,setMore]=useState(false);
   const [mobileNav,setMobileNav]=useState(false);
+  const searchInput=useRef<HTMLInputElement>(null);
   const menuButton=useRef<HTMLButtonElement>(null);
   const closeMenuButton=useRef<HTMLButtonElement>(null);
   useEffect(()=>{
     if(!mobileNav)return;
     closeMenuButton.current?.focus();
-    const media=matchMedia('(max-width: 700px)');
+    const media=matchMedia('(max-width: 860px)');
     const onResize=()=>{if(!media.matches)setMobileNav(false);};
     const onKey=(event:KeyboardEvent)=>{
       if(event.key==='Escape'){event.preventDefault();setMobileNav(false);}
@@ -77,6 +80,20 @@ function App(){
       if(media.matches)requestAnimationFrame(()=>menuButton.current?.focus());
     };
   },[mobileNav]);
+
+  useEffect(()=>{
+    if(!authorized||page!=='Inbox'||mobileNav)return;
+    const focusSearch=(event:KeyboardEvent)=>{
+      if(event.key!=='/'||event.ctrlKey||event.metaKey||event.altKey||
+        document.querySelector('dialog[open]')||
+        (event.target instanceof HTMLElement&&event.target.closest('input,textarea,select,button,a,[contenteditable]'))||
+        !searchInput.current?.getClientRects().length)return;
+      event.preventDefault();
+      searchInput.current.focus();
+    };
+    document.addEventListener('keydown',focusSearch);
+    return ()=>document.removeEventListener('keydown',focusSearch);
+  },[authorized,page,mobileNav]);
 
   const [view,setView]=useState('Message');
   const [integration,setIntegration]=useState<Integration>();
@@ -254,32 +271,36 @@ function App(){
 
   const matchingAddresses = addresses.filter(item=>(!addressDomain||item.address.endsWith('@'+addressDomain))&&
     (item.name+' '+item.address).toLowerCase().includes(addressQuery.trim().toLowerCase()));
+  const messageIndex=detail?messages.findIndex(message=>message.id===detail.id):-1;
+  const previous=messageIndex>0?messages[messageIndex-1]:undefined;
+  const next=messageIndex>=0?messages[messageIndex+1]:undefined;
+  const filtered=Boolean(query.trim()||unreadOnly||Object.values(filters).some(Boolean));
   const heading=address||domain||(starOnly?'Starred':folder==='inbox'?'Inbox':folder==='archive'?'Archive':'Trash');
   return <div className={'app '+(mobileNav?'show-nav ':'')+(detail&&page==='Inbox'?'show-detail':'')}>
     {mobileNav&&<div className="nav-scrim" aria-hidden="true" onClick={()=>setMobileNav(false)}/>}
     <aside className="sidebar" id="workspace-navigation" role={mobileNav?'dialog':undefined} aria-modal={mobileNav||undefined} aria-label="Letterdock navigation">
       <div className="brand">{logo}<span>Letterdock</span><button className="icon mobile" aria-label="Close menu" ref={closeMenuButton} onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
       <nav aria-label="Workspace">
-        <span className="nav-caption">WORKSPACE</span>
+        <span className="nav-caption">Mailbox</span>
         <button className={page==='Inbox'&&heading==='Inbox'?'active':''} onClick={()=>mailbox()}><Inbox size={17}/>Inbox</button>
         <button className={page==='Inbox'&&starOnly?'active':''} onClick={()=>mailbox('inbox','','',true)}><Star size={17}/>Starred</button>
         <button className={page==='Inbox'&&folder==='archive'?'active':''} onClick={()=>mailbox('archive')}><Archive size={17}/>Archive</button>
         <button className={page==='Inbox'&&folder==='trash'?'active':''} onClick={()=>mailbox('trash')}><Trash2 size={17}/>Trash</button>
         <button className={page==='Addresses'?'active':''} aria-current={page==='Addresses'?'page':undefined} onClick={()=>void navigate('Addresses')}><Mail size={17}/>Addresses</button>
-        <span className="nav-caption">CONFIGURATION</span>
+        <span className="nav-caption">Manage</span>
         {[['Domains',Globe],['Integrations',Boxes],['Health',CircleGauge]].map(([name,Icon])=>{
           const Glyph=Icon as typeof Globe;
           return <button key={String(name)} className={page===name?'active':''} onClick={()=>void navigate(String(name))}><Glyph size={17}/>{String(name)}</button>;
         })}
-        {domains.length>0&&<span className="nav-caption">DOMAINS</span>}
+        {domains.length>0&&<span className="nav-caption">Domains</span>}
         {domains.map(item=><button title={item.name} key={item.name} className={domain===item.name&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox',item.name)}><span className={'dot '+(item.verified?'online':'')}/><span className="ellipsis">{item.name}</span></button>)}
-        {addresses.some(item=>item.pinned)&&<span className="nav-caption">PINNED ADDRESSES</span>}
+        {addresses.some(item=>item.pinned)&&<span className="nav-caption">Pinned addresses</span>}
         {addresses.filter(item=>item.pinned).map(item=><button title={item.address} key={item.address} className={address===item.address&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox','',item.address)}><Mail size={15}/><span className="ellipsis">{item.name||item.address}</span>{item.unread>0&&<span className="address-count">{item.unread}</span>}</button>)}
       </nav>
       <button className="signout" onClick={()=>void action(async()=>{await api('/logout','POST');setAuthorized(false);setDetail(null);setMessages([]);})}><LogOut size={17}/>Sign out</button>
     </aside>
     <main className="workspace" inert={mobileNav||undefined}>
-      <header className="topbar"><button className="icon mobile" aria-label="Open menu" aria-controls="workspace-navigation" aria-expanded={mobileNav} ref={menuButton} onClick={()=>setMobileNav(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={13}/><strong>{page}</strong></header>
+      <header className="topbar"><button className="icon mobile" aria-label="Open menu" aria-controls="workspace-navigation" aria-expanded={mobileNav} ref={menuButton} onClick={()=>setMobileNav(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={13} aria-hidden="true"/><strong>{page}</strong></header>
       {(error||notice)&&<div className={error?'banner error':'banner'} role={error?'alert':'status'}>{error||notice}<button className="icon" aria-label="Dismiss" onClick={()=>{setError('');setNotice('');}}><X size={16}/></button></div>}
       {page==='Inbox'&&<div className="mail-layout">
         <section className="message-list" aria-label="Message list">
@@ -288,7 +309,10 @@ function App(){
             {address&&<form className="compact" onSubmit={event=>submit(event,async data=>{
               await api('/inboxes','PATCH',{address,name:data.get('name'),pinned:data.has('pinned')});
             })} key={address}><input name="name" aria-label="Inbox name" placeholder="Inbox name" defaultValue={addresses.find(a=>a.address===address)?.name}/><label className="check"><input type="checkbox" name="pinned" defaultChecked={addresses.find(a=>a.address===address)?.pinned}/>Pin</label><button>Save</button></form>}
-            <div className="search"><Search size={17}/><input aria-label="Search messages" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/><button className={'icon '+(advanced?'filter-active':'')} aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button></div>
+            <div className="search"><Search size={17} aria-hidden="true"/><input ref={searchInput} aria-label="Search messages" aria-keyshortcuts="/" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/>
+              {query?<button className="icon" aria-label="Clear search" onClick={()=>{setQuery('');searchInput.current?.focus();}}><X size={15}/></button>:<kbd aria-hidden="true">/</kbd>}
+              <button className={'icon '+(advanced?'filter-active':'')} aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button>
+            </div>
             <div className="inbox-scope" aria-label="Read status">
               <button aria-pressed={!unreadOnly} onClick={()=>setUnreadOnly(false)}>All messages</button>
               <button aria-pressed={unreadOnly} onClick={()=>setUnreadOnly(true)}>Unread</button>
@@ -300,17 +324,17 @@ function App(){
             {selected.length>0&&<div className="compact"><span>{selected.length} selected</span><button onClick={()=>void update(selected,{folder:folder==='inbox'?'archive':'inbox'})}>{folder==='inbox'?'Archive':'Restore'}</button><button onClick={()=>void update(selected,{unread:false})}>Mark read</button>{folder!=='trash'&&<button onClick={()=>void update(selected,{folder:'trash'})}>Trash</button>}</div>}
           </div>
           <div className="rows">
-            {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><span><Inbox size={22}/></span><strong>{query?'No matching messages':'No messages here'}</strong>{!query&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
+            {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><span><Inbox size={22}/></span><strong>{filtered?'No matching messages':'No messages here'}</strong>{filtered&&<button onClick={()=>{setQuery('');setFilters(blankFilters);setUnreadOnly(false);}}>Clear search and filters</button>}{!filtered&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
               <div className={'message-row '+(detail?.id===message.id?'chosen ':'')+(message.unread?'unread':'')} key={message.id}>
                 <input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selected.includes(message.id)} onChange={e=>setSelected(e.target.checked?[...selected,message.id]:selected.filter(id=>id!==message.id))}/>
-                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} onClick={()=>void open(message)}><span className="row-meta"><span className="ellipsis">{message.sender||'Unknown sender'}</span><time dateTime={message.received}>{new Date(message.received).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
+                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} onClick={()=>void open(message)}><span className="row-meta"><span className="ellipsis">{senderName(message.sender)}</span><time dateTime={message.received}>{emailDate.format(new Date(message.received))}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
                 <button className={'icon '+(message.starred?'starred':'')} aria-label={message.starred?'Remove star':'Star message'} onClick={()=>void update([message.id],{starred:!message.starred})}><Star size={16} fill={message.starred?'currentColor':'none'}/></button>
               </div>)}
             {more&&<button className="load-more" onClick={()=>void action(async()=>{const rows=await api<Message[]>(searchPath(messages.at(-1)?.id));setMessages([...messages,...rows]);setMore(rows.length===100);})}>Load older messages</button>}
           </div>
         </section>
         <section className="reader" aria-label="Message reader">
-          {!detail?<div className="reader-empty"><span><Mail size={26}/></span><h2>Select a message</h2><p>Choose an email from the inbox.</p></div>:
+          {!detail?<div className="reader-empty"><span><Mail size={26}/></span><h2>Select a message</h2><p>Open an email to read it and view its attachments.</p></div>:
           <article>
             <div className="reader-actions">
               <button className="icon mobile" aria-label="Back to messages" onClick={()=>setDetail(null)}><ArrowLeft size={19}/></button>
@@ -318,18 +342,22 @@ function App(){
               <button onClick={()=>void update([detail.id],{folder:detail.folder==='inbox'?'archive':'inbox'})}>{detail.folder==='inbox'?'Archive':'Restore'}</button>
               {detail.folder!=='trash'?<button onClick={()=>void update([detail.id],{folder:'trash'})}>Trash</button>:<button onClick={()=>{if(confirm('Permanently delete this message?'))void action(async()=>{await api('/messages/'+detail.id,'DELETE');setDetail(null);await refresh();});}}>Delete permanently</button>}
               <a className="button" href={'/api/raw/'+detail.id}><ArrowDownToLine size={15}/>.eml</a>
+              <div className="reader-navigation" aria-label="Message navigation">
+                <button className="icon" aria-label="Previous message" disabled={!previous} onClick={()=>{if(previous)void open(previous);}}><ChevronLeft size={17}/></button>
+                <button className="icon" aria-label="Next message" disabled={!next} onClick={()=>{if(next)void open(next);}}><ChevronRight size={17}/></button>
+              </div>
             </div>
             <h2 className="subject">{detail.subject||'(No subject)'}</h2>
             <dl className="message-meta"><dt>From</dt><dd>{detail.sender||'Unknown sender'}</dd><dt>Delivered to</dt><dd>{detail.recipient}</dd><dt>Received</dt><dd>{when(detail.received)}</dd></dl>
             <div className="label-list">{detail.labels.map(label=><button key={label} onClick={()=>void update([detail.id],{removeLabel:label})}>{label}<X size={12}/></button>)}
             <form className="compact" onSubmit={e=>{e.preventDefault();const value=new FormData(e.currentTarget).get('label');e.currentTarget.reset();void update([detail.id],{label:value});}}><input name="label" aria-label="New label" placeholder="Add label" required maxLength={60}/><button>Add</button></form></div>
-            <div className="tabs" aria-label="Message format">{['Message','Plain text','Headers'].map(tab=><button key={tab} aria-pressed={view===tab} onClick={()=>setView(tab)}>{tab}</button>)}</div>
-            {detail.state==='failed'?<div className="error"><p>{detail.error}</p><button onClick={()=>void update([detail.id],{retry:true})}>Retry parsing</button></div>:detail.state==='pending'?<button onClick={()=>void open(detail)}>Refresh processing status</button>:view==='Headers'?<pre>{JSON.stringify(detail.headers,null,2)}</pre>:view==='Plain text'||!detail.html?<pre>{detail.body}</pre>:<iframe title="Email body" sandbox="" referrerPolicy="no-referrer" srcDoc={'<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><style>body{font:15px system-ui;line-height:1.65;margin:0;color:#252e29;overflow-wrap:anywhere}table{max-width:100%}</style>'+detail.html}/>}
             {detail.attachments.length>0&&<section className="attachments"><h3>Attachments</h3>{detail.attachments.map(item=><div className="file" key={item.id}><Paperclip size={17}/><span className="ellipsis">{item.filename}</span><small>{Math.ceil(item.bytes/1024)} KB</small>{/^image\/(png|jpeg|gif|webp)$/.test(item.mime)&&<button onClick={()=>void action(async()=>{
               const response=await fetch('/api/files/'+item.id);
               if(!response.ok)throw Error('Preview unavailable');
               setPreview({name:item.filename,url:URL.createObjectURL(new Blob([await response.arrayBuffer()],{type:item.mime}))});
             })}>Preview</button>}<a className="button" href={'/api/files/'+item.id}>Download</a></div>)}</section>}
+            <div className="tabs" aria-label="Message format">{['Message','Plain text','Headers'].map(tab=><button key={tab} aria-pressed={view===tab} onClick={()=>setView(tab)}>{tab}</button>)}</div>
+            {detail.state==='failed'?<div className="error"><p>{detail.error}</p><button onClick={()=>void update([detail.id],{retry:true})}>Retry parsing</button></div>:detail.state==='pending'?<button onClick={()=>void open(detail)}>Refresh processing status</button>:view==='Headers'?<pre>{JSON.stringify(detail.headers,null,2)}</pre>:view==='Plain text'||!detail.html?<pre>{detail.body}</pre>:<iframe title="Email body" sandbox="" referrerPolicy="no-referrer" srcDoc={'<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><style>body{font:15px system-ui;line-height:1.65;margin:0;color:#252e29;overflow-wrap:anywhere}table{max-width:100%}</style>'+detail.html}/>}
           </article>}
         </section>
       </div>}

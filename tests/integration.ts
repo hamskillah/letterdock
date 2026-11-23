@@ -140,19 +140,30 @@ try {
   }
   const browser=await chromium.launch();
   try {
-    for(const size of [{width:1440,height:900},{width:390,height:844}]){
+    for(const size of [{width:1440,height:900},{width:1024,height:800},{width:768,height:850},{width:390,height:844}]){
       const page=await browser.newPage({viewport:size});
       await page.goto(origin);
       await page.getByLabel('Admin password').fill(password);
       await page.getByRole('button',{name:'Sign in'}).click();
-      await page.getByRole('textbox',{name:'Search messages'}).fill(recipient);
+      const searchBox=page.getByRole('textbox',{name:'Search messages'});
+      await searchBox.waitFor();
+      assert.equal(await page.locator('.sidebar .brand-mark').evaluate((image:HTMLImageElement)=>image.complete&&image.naturalWidth>0),true);
+      if(size.width===1440){
+        await page.locator('body').click({position:{x:720,y:25}});
+        await page.keyboard.press('/');
+        assert.equal(await searchBox.evaluate(element=>element===document.activeElement),true);
+        await searchBox.fill('nonexistent fixture');
+        await page.getByRole('button',{name:'Clear search',exact:true}).click();
+        assert.equal(await searchBox.inputValue(),'');
+      }
+      await searchBox.fill(recipient);
       await page.getByRole('button',{name:/Invoice 42/}).first().click();
       await page.getByRole('heading',{name:'Invoice 42'}).waitFor();
       await page.getByRole('button',{name:'Headers'}).click();
       await page.getByText(/different@example.org/).first().waitFor();
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
-      if(size.width<700)await page.getByRole('button',{name:'Back to messages'}).click();
-      if(size.width<700)await page.getByRole('button',{name:'Open menu'}).click();
+      if(size.width<=860)await page.getByRole('button',{name:'Back to messages'}).click();
+      if(size.width<=860)await page.getByRole('button',{name:'Open menu'}).click();
       await page.getByRole('button',{name:'Addresses',exact:true}).click();
       await page.getByRole('heading',{name:'Addresses',exact:true}).waitFor();
       await page.getByRole('searchbox',{name:'Find an address'}).fill(manual);
@@ -162,7 +173,7 @@ try {
       await addressCard.getByRole('button',{name:'Unpin',exact:true}).click();
       await addressCard.getByRole('button',{name:'Open inbox'}).click();
       await page.getByRole('heading',{name:manual+'@'+domain,exact:true}).waitFor();
-      if(size.width<700)await page.getByRole('button',{name:'Open menu'}).click();
+      if(size.width<=860)await page.getByRole('button',{name:'Open menu'}).click();
       await page.getByRole('button',{name:'Domains',exact:true}).click();
       await page.getByRole('heading',{name:'Domains',exact:true}).waitFor();
       await page.getByRole('heading',{name:'DNS records'}).first().waitFor();
