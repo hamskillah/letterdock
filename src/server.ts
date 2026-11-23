@@ -5,6 +5,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolveMx, resolveTxt } from 'node:dns/promises';
 import { resolve } from 'node:path';
 import { domainToASCII } from 'node:url';
+import { domainSetup, SetupConflict } from './cloudflare.js';
 import { db, migrate } from './db.js';
 import { runJobs, stagingStatus } from './jobs.js';
 
@@ -115,7 +116,7 @@ app.post<{Body:{name:string}}>('/api/domains',async(req,res)=>{
   const name=domainToASCII(String(req.body?.name??'').trim().toLowerCase());
   if(!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/.test(name)||name.length>253) return res.code(400).send({message:'Enter a valid domain'});
   await db.query('INSERT INTO domains(name) VALUES($1) ON CONFLICT DO NOTHING',[name]);
-  return {ok:true};
+  return {ok:true,name};
 });
 app.post<{Params:{name:string},Body:{retention?:number|null}}>('/api/domains/:name',async(req,res)=>{
   const name=req.params.name;
@@ -133,6 +134,21 @@ app.post<{Params:{name:string},Body:{retention?:number|null}}>('/api/domains/:na
   if(!dns||!routing) return res.code(422).send({message:!dns?'Verification TXT missing':'Cloudflare MX records are missing or conflict'});
   await db.query('UPDATE domains SET verified=true WHERE name=$1',[name]);
   return {ok:true};
+});
+app.route<{Params:{name:string}}>({
+  method:['GET','POST'], url:'/api/domains/:name/cloudflare',
+  async handler(req,res) {
+    const {rows:[domain]}=await db.query('SELECT name,token FROM domains WHERE name=$1',[req.params.name]);
+    if(!domain) return res.code(404).send({message:'Domain not found'});
+    try {
+      const result=await domainSetup(domain.name,domain.token,req.method==='POST');
+      return req.method==='POST'&&!result.ready ? res.code(409).send(result) : result;
+    } catch(error) {
+      if(error instanceof SetupConflict) return res.code(409).send({message:error.message});
+      req.log.warn('Cloudflare setup could not be checked');
+      return res.code(502).send({message:'Cloudflare or DNS could not be reached. Try again.'});
+    }
+  }
 });
 app.get('/api/inboxes',async()=> (await db.query('SELECT * FROM inboxes ORDER BY pinned DESC,address')).rows);
 app.patch<{Body:{address:string,name:string,pinned:boolean}}>('/api/inboxes',async req=>{

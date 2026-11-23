@@ -39,6 +39,11 @@ try {
   assert.equal(login.status,200);
   const cookie=login.headers.get('set-cookie')!.split(';')[0];
   const headers={cookie,origin,'content-type':'application/json'};
+  const preflight=await fetch(origin+'/api/domains/'+domain+'/cloudflare',{headers}).then(response=>response.json());
+  assert.equal(preflight.ready,false);
+  assert.match(preflight.message,/Configure the Cloudflare token/);
+  const refused=await fetch(origin+'/api/domains/'+domain+'/cloudflare',{method:'POST',headers,body:'{}'});
+  assert.equal(refused.status,409);
   const inboxes=await fetch(origin+'/api/inboxes',{headers}).then(response=>response.json());
   assert.equal(inboxes.filter((row:{address:string})=>row.address===recipient).length,1);
   const record=await fetch(origin+'/api/messages/'+id,{headers}).then(response=>response.json());

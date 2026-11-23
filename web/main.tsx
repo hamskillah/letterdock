@@ -6,6 +6,7 @@ import './style.css';
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
 type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;error:string;attachments:{id:string;filename:string;mime:string;bytes:number}[]};
 type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null};
+type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean};
 type Address = {address:string;name:string;pinned:boolean};
 type Integration = {keys:{id:string;name:string}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
 type Health = {free:number;staging:{configured:boolean;lastChecked:string|null;moreWaiting:boolean;error:boolean};queues:{state:string;count:number;oldest:string}[];ingest:{id:string;recipient:string;status:string;time:string}[];deliveries:{status:string;count:number}[]};
@@ -31,6 +32,7 @@ function App(){
   const [folder,setFolder]=useState('inbox');
   const [starOnly,setStarOnly]=useState(false);
   const [unreadOnly,setUnreadOnly]=useState(false);
+  const [cloudflare,setCloudflare]=useState<Record<string,CloudflareStatus>>({});
   const [domains,setDomains]=useState<Domain[]>([]);
   const [addresses,setAddresses]=useState<Address[]>([]);
   const [domain,setDomain]=useState('');
@@ -54,6 +56,10 @@ function App(){
   function fail(cause:unknown) {
     if(cause instanceof AccessError) setAuthorized(false);
     setError(cause instanceof Error?cause.message:'Something went wrong');
+  }
+  async function checkCloudflare(name:string,method='GET'){
+    const status=await api<CloudflareStatus>('/domains/'+encodeURIComponent(name)+'/cloudflare',method);
+    setCloudflare(previous=>({...previous,[name]:{...status,applied:method==='POST'}}));
   }
   async function directory(){
     const [registered,inboxes]=await Promise.all([api<Domain[]>('/domains'),api<Address[]>('/inboxes')]);
@@ -81,7 +87,7 @@ function App(){
     return ()=>{current=false;clearTimeout(timer);};
   },[authorized,page,folder,domain,address,query,filters,starOnly,unreadOnly]);
   useEffect(()=>{
-    if(!authorized)return;
+    if(!authorized||page!=='Inbox')return;
     const timer=setInterval(()=>{
       if(document.hidden)return;
       directory().catch(fail);
@@ -92,6 +98,26 @@ function App(){
     },10000);
     return ()=>clearInterval(timer);
   },[authorized,page,folder,domain,address,query,filters,starOnly,unreadOnly,selected.length,messages.length]);
+
+  useEffect(()=>{
+    if(!authorized||page!=='Domains')return;
+    const waiting=domains.filter(item=>!item.verified&&cloudflare[item.name]?.applied);
+    if(!waiting.length)return;
+    let running=false;
+    const timer=setInterval(async()=>{
+      if(running)return;
+      running=true;
+      try {
+        for(const item of waiting) {
+          try { await api('/domains/'+encodeURIComponent(item.name),'POST'); }
+          catch(cause) { if(cause instanceof AccessError) { fail(cause); return; } }
+        }
+        await directory();
+      } catch(cause) { fail(cause); }
+      finally { running=false; }
+    },10000);
+    return ()=>clearInterval(timer);
+  },[authorized,page,domains,cloudflare]);
 
   async function refresh(){
     await directory();
@@ -231,10 +257,19 @@ function App(){
         </section>
       </div>}
       {page==='Domains'&&<section className="settings"><h1>Domains</h1><p>Connect a Cloudflare domain to receive mail at any address.</p>
-        <form className="settings-form" onSubmit={e=>submit(e,data=>api('/domains','POST',{name:data.get('name')}))}><label>Domain<input name="name" placeholder="example.com" required/></label><button className="primary">Add domain</button></form>
+        <form className="settings-form" onSubmit={e=>submit(e,async data=>{
+          const {name}=await api<{name:string}>('/domains','POST',{name:data.get('name')});
+          await directory();
+          await checkCloudflare(name);
+        })}><label>Domain<input name="name" placeholder="example.com" required/></label><button className="primary">Add domain</button></form>
         {domains.length===0&&<p className="empty-state">No domains connected yet.</p>}
         {domains.map(item=><section className="settings-row" key={item.name}><h2>{item.name}</h2><span className={'status '+(item.verified?'ok':'')}>{item.last_received?'Receiving':item.verified?'DNS verified · awaiting test mail':'Setup required'}</span>
-          <ol><li>Add TXT <code>_letterdock.{item.name}</code> with value <code>letterdock={item.token}</code>.</li><li>Enable Email Routing in Cloudflare. Review existing MX records before authorizing any change.</li><li>Set catch-all action to your Letterdock Worker, verify DNS, then send a test message from an external mailbox.</li></ol>
+          <div className="compact">
+            <button onClick={()=>void action(()=>checkCloudflare(item.name))}>Check Cloudflare</button>
+            {cloudflare[item.name]?.ready&&!cloudflare[item.name].applied&&<button className="primary" onClick={()=>void action(()=>checkCloudflare(item.name,'POST'))}>Set up Cloudflare</button>}
+          </div>
+          {cloudflare[item.name]&&<p role="status">{cloudflare[item.name].applied?(item.verified?'DNS verified. Send a test email.':'Waiting for DNS. Letterdock will retry automatically.'):cloudflare[item.name].message}</p>}
+          <details><summary>Manual setup</summary><ol><li>Add TXT <code>_letterdock.{item.name}</code> with value <code>letterdock={item.token}</code>.</li><li>Enable Email Routing in Cloudflare. Review existing MX records before authorizing any change.</li><li>Set catch-all action to your Letterdock Worker, verify DNS, then send a test message from an external mailbox.</li></ol></details>
           {item.last_received&&<p>Last received {when(item.last_received)}</p>}
           <div className="compact"><button onClick={()=>void action(async()=>{await api('/domains/'+item.name,'POST');await refresh();},'DNS verified')}>Verify DNS</button>
           <form className="compact" onSubmit={e=>submit(e,data=>api('/domains/'+item.name,'POST',{retention:data.get('days')?Number(data.get('days')):null}))}><label>Retention days<input name="days" type="number" min="1" max="3650" defaultValue={item.retention_days??''} placeholder="Keep indefinitely"/></label><button>Save</button></form></div></section>)}

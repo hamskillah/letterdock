@@ -78,3 +78,17 @@ version via Compose, then check Health, send to a fresh address and verify the w
   the app to loopback and has no published database port.
 - Use separate test domains for inbound validation. Confirm DNS ownership, catch-all
   routing, an external test message, and inbox visibility before switching any live MX.
+
+## Automatic domain setup
+
+For an existing Cloudflare Email Worker and R2 staging bucket, set
+`CLOUDFLARE_EMAIL_WORKER` to the deployed Worker name, and provide a
+zone-scoped `CLOUDFLARE_API_TOKEN` on the server. Grant Zone Read, DNS Edit,
+Zone Settings Edit, and Email Routing Rules Edit on the zones to onboard.
+Keep the token in the server environment.
+
+Adding a domain checks whether Letterdock can access its Cloudflare zone. Review
+the preflight, then select **Set up Cloudflare** to create verification TXT,
+enable Email Routing, and route catch-all to the installed Worker. Letterdock
+stops if it sees unrelated MX records or a catch-all owned by another setup.
+Letterdock checks DNS while the Domains page is open. Manual verification is also available. The dashboard can stay on localhost.
