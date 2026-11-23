@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Archive, ArrowLeft, ArrowDownToLine, ArrowUpRight, Boxes, ChevronRight, CircleGauge, Filter, Globe, Inbox, LogOut, Mail, Menu, Paperclip, Search, Star, Trash2, X } from 'lucide-react';
 import './style.css';
@@ -58,6 +58,25 @@ function App(){
   const [selected,setSelected]=useState<string[]>([]);
   const [more,setMore]=useState(false);
   const [mobileNav,setMobileNav]=useState(false);
+  const menuButton=useRef<HTMLButtonElement>(null);
+  const closeMenuButton=useRef<HTMLButtonElement>(null);
+  useEffect(()=>{
+    if(!mobileNav)return;
+    closeMenuButton.current?.focus();
+    const media=matchMedia('(max-width: 700px)');
+    const onResize=()=>{if(!media.matches)setMobileNav(false);};
+    const onKey=(event:KeyboardEvent)=>{
+      if(event.key==='Escape'){event.preventDefault();setMobileNav(false);}
+    };
+    media.addEventListener('change',onResize);
+    document.addEventListener('keydown',onKey);
+    return ()=>{
+      media.removeEventListener('change',onResize);
+      document.removeEventListener('keydown',onKey);
+      if(media.matches)requestAnimationFrame(()=>menuButton.current?.focus());
+    };
+  },[mobileNav]);
+
   const [view,setView]=useState('Message');
   const [integration,setIntegration]=useState<Integration>();
   const [health,setHealth]=useState<Health>();
@@ -232,8 +251,9 @@ function App(){
     (item.name+' '+item.address).toLowerCase().includes(addressQuery.trim().toLowerCase()));
   const heading=address||domain||(starOnly?'Starred':folder==='inbox'?'Inbox':folder==='archive'?'Archive':'Trash');
   return <div className={'app '+(mobileNav?'show-nav ':'')+(detail&&page==='Inbox'?'show-detail':'')}>
-    <aside className="sidebar">
-      <div className="brand">{logo}<span>Letterdock</span><button className="icon mobile" aria-label="Close menu" onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
+    {mobileNav&&<div className="nav-scrim" aria-hidden="true" onClick={()=>setMobileNav(false)}/>}
+    <aside className="sidebar" id="workspace-navigation" role={mobileNav?'dialog':undefined} aria-modal={mobileNav||undefined} aria-label="Letterdock navigation">
+      <div className="brand">{logo}<span>Letterdock</span><button className="icon mobile" aria-label="Close menu" ref={closeMenuButton} onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
       <nav aria-label="Workspace">
         <span className="nav-caption">WORKSPACE</span>
         <button className={page==='Inbox'&&heading==='Inbox'?'active':''} onClick={()=>mailbox()}><Inbox size={17}/>Inbox</button>
@@ -253,35 +273,39 @@ function App(){
       </nav>
       <button className="signout" onClick={()=>void action(async()=>{await api('/logout','POST');setAuthorized(false);setDetail(null);setMessages([]);})}><LogOut size={17}/>Sign out</button>
     </aside>
-    <main className="workspace">
-      <header className="topbar"><button className="icon mobile" aria-label="Open menu" onClick={()=>setMobileNav(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={13}/><strong>{page}</strong></header>
+    <main className="workspace" inert={mobileNav||undefined}>
+      <header className="topbar"><button className="icon mobile" aria-label="Open menu" aria-controls="workspace-navigation" aria-expanded={mobileNav} ref={menuButton} onClick={()=>setMobileNav(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={13}/><strong>{page}</strong></header>
       {(error||notice)&&<div className={error?'banner error':'banner'} role={error?'alert':'status'}>{error||notice}<button className="icon" aria-label="Dismiss" onClick={()=>{setError('');setNotice('');}}><X size={16}/></button></div>}
       {page==='Inbox'&&<div className="mail-layout">
         <section className="message-list" aria-label="Message list">
-          <div className="list-head"><h1>{heading}</h1>
+          <div className="list-head">
+            <div className="list-title"><h1>{heading}</h1>{!loading&&messages.length>0&&<span className="message-count" aria-label={messages.length+' loaded messages'}>{messages.length}{more?'+':''}</span>}</div>
             {address&&<form className="compact" onSubmit={event=>submit(event,async data=>{
               await api('/inboxes','PATCH',{address,name:data.get('name'),pinned:data.has('pinned')});
             })} key={address}><input name="name" aria-label="Inbox name" placeholder="Inbox name" defaultValue={addresses.find(a=>a.address===address)?.name}/><label className="check"><input type="checkbox" name="pinned" defaultChecked={addresses.find(a=>a.address===address)?.pinned}/>Pin</label><button>Save</button></form>}
-            <div className="search"><Search size={17}/><input aria-label="Search messages" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="icon" aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button></div>
+            <div className="search"><Search size={17}/><input aria-label="Search messages" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/><button className={'icon '+(advanced?'filter-active':'')} aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button></div>
+            <div className="inbox-scope" aria-label="Read status">
+              <button aria-pressed={!unreadOnly} onClick={()=>setUnreadOnly(false)}>All messages</button>
+              <button aria-pressed={unreadOnly} onClick={()=>setUnreadOnly(true)}>Unread</button>
+            </div>
             {advanced&&<div className="filters">{Object.entries(filters).filter(([key])=>key!=='attachment').map(([key,value])=><label key={key}>{key}<input type={['since','until'].includes(key)?'date':'text'} value={value} onChange={e=>setFilters({...filters,[key]:e.target.value})}/></label>)}
               <label className="check"><input type="checkbox" checked={filters.attachment==='true'} onChange={e=>setFilters({...filters,attachment:e.target.checked?'true':''})}/>Has attachment</label>
-              <label className="check"><input type="checkbox" checked={unreadOnly} onChange={e=>setUnreadOnly(e.target.checked)}/>Unread</label>
               <button onClick={()=>{setFilters(blankFilters);setUnreadOnly(false);}}>Clear filters</button>
             </div>}
             {selected.length>0&&<div className="compact"><span>{selected.length} selected</span><button onClick={()=>void update(selected,{folder:folder==='inbox'?'archive':'inbox'})}>{folder==='inbox'?'Archive':'Restore'}</button><button onClick={()=>void update(selected,{unread:false})}>Mark read</button>{folder!=='trash'&&<button onClick={()=>void update(selected,{folder:'trash'})}>Trash</button>}</div>}
           </div>
           <div className="rows">
-            {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><Inbox size={23}/><strong>{query?'No matching messages':'No messages here'}</strong>{!query&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
+            {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><span><Inbox size={22}/></span><strong>{query?'No matching messages':'No messages here'}</strong>{!query&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
               <div className={'message-row '+(detail?.id===message.id?'chosen ':'')+(message.unread?'unread':'')} key={message.id}>
                 <input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selected.includes(message.id)} onChange={e=>setSelected(e.target.checked?[...selected,message.id]:selected.filter(id=>id!==message.id))}/>
-                <button className="message-link" onClick={()=>void open(message)}><span className="row-meta"><span className="ellipsis">{message.sender||'Unknown sender'}</span><time dateTime={message.received}>{new Date(message.received).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
+                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} onClick={()=>void open(message)}><span className="row-meta"><span className="ellipsis">{message.sender||'Unknown sender'}</span><time dateTime={message.received}>{new Date(message.received).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
                 <button className={'icon '+(message.starred?'starred':'')} aria-label={message.starred?'Remove star':'Star message'} onClick={()=>void update([message.id],{starred:!message.starred})}><Star size={16} fill={message.starred?'currentColor':'none'}/></button>
               </div>)}
             {more&&<button className="load-more" onClick={()=>void action(async()=>{const rows=await api<Message[]>(searchPath(messages.at(-1)?.id));setMessages([...messages,...rows]);setMore(rows.length===100);})}>Load older messages</button>}
           </div>
         </section>
         <section className="reader" aria-label="Message reader">
-          {!detail?<div className="reader-empty"><span><Mail size={28}/></span><h2>Select a message</h2><p>Open an email to read it and view its attachments.</p></div>:
+          {!detail?<div className="reader-empty"><span><Mail size={26}/></span><h2>Select a message</h2><p>Choose an email from the inbox.</p></div>:
           <article>
             <div className="reader-actions">
               <button className="icon mobile" aria-label="Back to messages" onClick={()=>setDetail(null)}><ArrowLeft size={19}/></button>
@@ -435,7 +459,7 @@ function App(){
           </section>;
         })}
       </section>}
-      {page==='Integrations'&&<section className="settings"><h1>Integrations</h1>
+      {page==='Integrations'&&<section className="settings"><header className="settings-heading"><span className="section-icon"><Boxes size={21}/></span><h1>Integrations</h1></header>
         {credential&&<div className="secret"><strong>Copy this secret now</strong><code>{credential}</code><button onClick={()=>void action(()=>navigator.clipboard.writeText(credential),'Copied')}>Copy</button><button onClick={()=>setCredential('')}>Dismiss</button></div>}
         <h2>Read-only API keys</h2><form className="settings-form" onSubmit={e=>submit(e,async data=>setCredential((await api<{secret:string}>('/keys','POST',{name:data.get('name')})).secret))}><label>Key name<input name="name" required/></label><button className="primary">Create key</button></form>
         {integration?.keys.map(item=><div className="settings-row compact" key={item.id}><strong>{item.name}</strong><button onClick={()=>{if(confirm('Revoke this API key?'))void action(async()=>{await api('/integrations/key/'+item.id,'DELETE');await refresh();});}}>Revoke</button></div>)}
@@ -445,7 +469,7 @@ function App(){
         {integration?.deliveries.length===0&&<p className="empty-state">No deliveries yet.</p>}
         {integration?.deliveries.map((item,index)=><div className="settings-row compact" key={item.id+index}><span>{item.url}</span><small>{when(item.attempted)} · {item.result}</small><button onClick={()=>void action(async()=>{await api('/replay/'+item.id,'POST');await refresh();},'Replay queued')}>Replay</button></div>)}
       </section>}
-      {page==='Health'&&<section className="settings"><h1>Health</h1><button onClick={()=>void action(refresh)}>Refresh</button>
+      {page==='Health'&&<section className="settings"><header className="settings-heading"><span className="section-icon"><CircleGauge size={21}/></span><h1>Health</h1></header><button onClick={()=>void action(refresh)}>Refresh</button>
         {health&&<><dl className="stats"><div><dt>Free disk space</dt><dd>{(health.free/1024**3).toFixed(1)} GiB</dd></div><div><dt>Pending parsing</dt><dd>{health.queues.find(row=>row.state==='pending')?.count??0}</dd></div><div><dt>Failed webhooks</dt><dd>{health.deliveries.find(row=>row.status==='failed')?.count??0}</dd></div></dl>
         {health.queues.filter(row=>row.state!=='ready').map(row=><p key={row.state}>Oldest {row.state} message · {when(row.oldest)}</p>)}
         <h2>Staging connection</h2>
