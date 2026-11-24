@@ -35,6 +35,7 @@ assert(verify('RSA-SHA256',Buffer.from(apply.search.slice(1).split('&key=')[0]),
 await migrate();
 const legacyWebhook='whsec_'+Buffer.alloc(32,3).toString('base64');
 const legacyHookId=randomUUID();
+let addressHookId:string|undefined;
 await db.query('INSERT INTO hooks(id,url,secret,filter) VALUES($1,$2,$3,$4)',
   [legacyHookId,'https://example.net',legacyWebhook,'unused.integration.example']);
 const server=spawn(process.execPath,['--import','tsx','src/server.ts'],{
@@ -64,6 +65,14 @@ try {
   const unsignedApply=await fetch(origin+'/api/cloudflare/oauth/apply',{method:'POST',headers,body:JSON.stringify({name:domain})});
   assert.equal(unsignedApply.status,403);
   const manual='billing+'+id.slice(0,8);
+  const addressHookUrl='https://127.0.0.1/'+id;
+  const createRuleHook=await fetch(origin+'/api/hooks',{method:'POST',headers,
+    body:JSON.stringify({url:addressHookUrl,addressOnly:true})});
+  assert.equal(createRuleHook.status,200);
+  const ruleHooks=await fetch(origin+'/api/inbox-rule-hooks',{headers}).then(response=>response.json());
+  addressHookId=ruleHooks.find((hook:{url:string})=>hook.url===addressHookUrl)?.id;
+  assert(addressHookId);
+  assert(!ruleHooks.some((hook:{id:string})=>hook.id===legacyHookId));
   const createAddress=()=>fetch(origin+'/api/inboxes',{method:'POST',headers,body:JSON.stringify({local:manual,domain,name:'Billing'})});
   assert.equal((await createAddress()).status,201);
   assert.equal((await createAddress()).status,409);
@@ -168,6 +177,31 @@ try {
       await page.getByRole('heading',{name:'Addresses',exact:true}).waitFor();
       await page.getByRole('searchbox',{name:'Find an address'}).fill(manual);
       const addressCard=page.getByText(manual+'@'+domain,{exact:true}).locator('xpath=ancestor::article[1]');
+      if(size.width===1440){
+        const address=manual+'@'+domain;
+        const invalidRule=await fetch(origin+'/api/inbox-rules',{method:'PATCH',headers,
+          body:JSON.stringify({address,label:'Invoices',webhookId:legacyHookId})});
+        assert.equal(invalidRule.status,422);
+        await addressCard.getByRole('button',{name:'Rules',exact:true}).click();
+        await addressCard.getByLabel('Automatic label').fill('Invoices');
+        await addressCard.getByLabel('Additional webhook').selectOption(addressHookId);
+        await addressCard.getByRole('button',{name:'Save rules'}).click();
+        await addressCard.getByText('Auto-label: Invoices · Webhook assigned',{exact:true}).waitFor();
+        const ruleMailId=randomUUID();
+        await importMail(ruleMailId,'sender@example.net',address,raw);
+        await parseNext();
+        const applied=await db.query('SELECT labels FROM messages WHERE id=$1',[ruleMailId]);
+        assert.deepEqual(applied.rows[0]?.labels,['Invoices']);
+        const routed=await db.query('SELECT message FROM deliveries WHERE hook=$1',[addressHookId]);
+        assert.deepEqual(routed.rows,[{message:ruleMailId}]);
+      }
+      if(size.width===390){
+        await addressCard.getByRole('button',{name:'Rules',exact:true}).click();
+        assert.equal(await addressCard.getByLabel('Automatic label').inputValue(),'Invoices');
+        assert.equal(await addressCard.getByLabel('Additional webhook').inputValue(),addressHookId);
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+        await addressCard.getByRole('button',{name:'Cancel',exact:true}).click();
+      }
       await addressCard.getByRole('button',{name:'Pin',exact:true}).click();
       await addressCard.getByRole('button',{name:'Unpin',exact:true}).waitFor();
       await addressCard.getByRole('button',{name:'Unpin',exact:true}).click();
@@ -192,6 +226,7 @@ try {
         await card.getByText(/^Test email verified/).waitFor({timeout:12000});
         const confirmed=await fetch(path,{headers}).then(response=>response.json());
         assert(confirmed.delivery_verified_at);
+        assert.equal((await db.query('SELECT 1 FROM deliveries WHERE hook=$1 AND message=$2',[addressHookId,testId])).rowCount,0);
         assert.equal(confirmed.activity.find((event:{id:string})=>event.id===testId)?.status,'ready');
         await card.getByText('Recent delivery activity',{exact:true}).click();
         await card.getByText('In inbox',{exact:true}).first().waitFor();
@@ -244,6 +279,11 @@ try {
   assert.equal(readded.status,200);
   const restored=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[domain]);
   assert.deepEqual(restored.rows[0],{verified:false,removed_at:null});
+  const removal=await fetch(origin+'/api/integrations/hook/'+addressHookId,{method:'DELETE',headers:{cookie,origin}});
+  assert.equal(removal.status,200);
+  const savedRule=await db.query('SELECT auto_label,webhook_id FROM inboxes WHERE address=$1',[manual+'@'+domain]);
+  assert.deepEqual(savedRule.rows[0],{auto_label:'Invoices',webhook_id:null});
+  console.log('Passed: exact-recipient rules, automatic labels, webhook queue and rule cleanup');
   const resetHealth=await fetch(origin+'/api/domains/'+domain+'/delivery-health',{headers}).then(response=>response.json());
   assert.equal(resetHealth.delivery_test_address,null);
   assert.equal(resetHealth.delivery_verified_at,null);
@@ -270,6 +310,6 @@ try {
   console.log('Passed: catch-all, duplicate ingest, BCC, sanitization, labels/search, SDK and attachment download');
 } finally {
   server.kill();
-  await db.query('DELETE FROM hooks WHERE id=$1',[legacyHookId]);
+  await db.query('DELETE FROM hooks WHERE id=ANY($1::uuid[])',[[legacyHookId,...(addressHookId?[addressHookId]:[])]]);
   await db.end();
 }

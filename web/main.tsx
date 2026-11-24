@@ -8,8 +8,8 @@ type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;
 type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null;prune_days:number|null} & DeliveryTest;
 type CloudflareConnection = {canProvision:boolean;oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
-type Address = {address:string;name:string;pinned:boolean;unread:number};
-type Integration = {keys:{id:string;name:string;domain:string|null}[];hooks:{id:string;url:string;filter:string}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
+type Address = {address:string;name:string;pinned:boolean;unread:number;auto_label:string|null;webhook_id:string|null};
+type Integration = {keys:{id:string;name:string;domain:string|null}[];hooks:{id:string;url:string;filter:string;address_only:boolean}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
 type Health = {free:number;staging:{configured:boolean;lastChecked:string|null;moreWaiting:boolean;error:boolean};queues:{state:string;count:number;oldest:string}[];ingest:{id:string;recipient:string;status:string;time:string}[];deliveries:{status:string;count:number}[]};
 
 class AccessError extends Error {}
@@ -135,6 +135,9 @@ function App(){
   const [addressDomain,setAddressDomain]=useState('');
   const [addressQuery,setAddressQuery]=useState('');
   const [addressEdit,setAddressEdit]=useState('');
+  const [ruleAddress,setRuleAddress]=useState('');
+  const [ruleHooks,setRuleHooks]=useState<{id:string;url:string}[]>([]);
+  const [addressOnlyHook,setAddressOnlyHook]=useState(false);
   const [addresses,setAddresses]=useState<Address[]>([]);
   const [domain,setDomain]=useState('');
   const [address,setAddress]=useState('');
@@ -468,19 +471,40 @@ function App(){
         </div>
         <div className="address-list">
           {matchingAddresses.map(item=><article className="address-row" key={item.address}>
-            <div className="address-identity"><Mail size={17}/><div><h2>{item.name||item.address}</h2>{item.name&&<p>{item.address}</p>}</div></div>
+            <div className="address-identity"><Mail size={17}/><div><h2>{item.name||item.address}</h2>{item.name&&<p>{item.address}</p>}
+              {(item.auto_label||item.webhook_id)&&<p>{[item.auto_label&&'Auto-label: '+item.auto_label,item.webhook_id&&'Webhook assigned'].filter(Boolean).join(' · ')}</p>}
+            </div></div>
             <div className="compact address-actions">
               {item.unread>0&&<span className="address-count" aria-label={item.unread+' unread messages'}>{item.unread} unread</span>}
               <button aria-pressed={item.pinned} onClick={()=>void action(async()=>{
                 await api('/inboxes','PATCH',{address:item.address,name:item.name,pinned:!item.pinned});await directory();
               })}><Star size={15} fill={item.pinned?'currentColor':'none'}/>{item.pinned?'Unpin':'Pin'}</button>
-              <button onClick={()=>setAddressEdit(addressEdit===item.address?'':item.address)}>Rename</button>
+              <button aria-expanded={ruleAddress===item.address} aria-controls={ruleAddress===item.address?'address-rules':undefined} onClick={()=>void action(async()=>{
+                if(ruleAddress===item.address){setRuleAddress('');return;}
+                setRuleHooks(await api('/inbox-rule-hooks'));
+                setAddressEdit('');setRuleAddress(item.address);
+              })}>Rules</button>
+              <button onClick={()=>{setRuleAddress('');setAddressEdit(addressEdit===item.address?'':item.address);}}>Rename</button>
               <button onClick={()=>void action(()=>navigator.clipboard.writeText(item.address),'Address copied')}>Copy</button>
               <button onClick={()=>mailbox('inbox','',item.address)}>Open inbox <ArrowUpRight size={14}/></button>
             </div>
             {addressEdit===item.address&&<form className="compact address-edit" onSubmit={event=>submit(event,async data=>{
               await api('/inboxes','PATCH',{address:item.address,name:data.get('name'),pinned:item.pinned});setAddressEdit('');
             })}><label>Display name<input name="name" maxLength={120} defaultValue={item.name}/></label><button className="primary">Save name</button><button type="button" onClick={()=>setAddressEdit('')}>Cancel</button></form>}
+            {ruleAddress===item.address&&<form id="address-rules" aria-label={'Rules for '+item.address} className="address-edit address-rules" onSubmit={event=>submit(event,async data=>{
+              await api('/inbox-rules','PATCH',{address:item.address,label:data.get('label'),webhookId:data.get('webhook')||null});
+              setRuleAddress('');
+              setNotice('Address rules saved');
+            })}>
+              <p>Applies when new mail is processed for this address.</p>
+              <label htmlFor="rule-label">Automatic label<input id="rule-label" name="label" maxLength={60} defaultValue={item.auto_label??''}/></label>
+              <label htmlFor="rule-webhook">Additional webhook<select id="rule-webhook" name="webhook" aria-describedby="rule-webhook-help" defaultValue={item.webhook_id??''}>
+                <option value="">None</option>
+                {ruleHooks.map(hook=><option key={hook.id} value={hook.id}>{hook.url}</option>)}
+              </select></label>
+              <p id="rule-webhook-help">Create a webhook with “Only selected addresses” in <button className="link-button" type="button" onClick={()=>void navigate('Integrations')}>Integrations</button>.</p>
+              <div className="compact"><button type="submit" className="primary">Save rules</button><button type="button" onClick={()=>setRuleAddress('')}>Cancel</button></div>
+            </form>}
           </article>)}
           {matchingAddresses.length===0&&
             <p className="empty-state">{addresses.length?'No addresses match these filters.':'No addresses yet. Add one above or receive an email at a new address.'}</p>}
@@ -604,8 +628,19 @@ function App(){
           <button className="primary">Create key</button>
         </form>
         {integration?.keys.map(item=><div className="settings-row compact" key={item.id}><span><strong>{item.name}</strong><small>{item.domain??'Disabled · Create a domain-scoped key'}</small></span><button onClick={()=>{if(confirm('Revoke this API key?'))void action(async()=>{await api('/integrations/key/'+item.id,'DELETE');await refresh();});}}>Revoke</button></div>)}
-        <h2>Webhooks</h2><form className="settings-form" onSubmit={e=>submit(e,async data=>setCredential((await api<{secret:string}>('/hooks','POST',{url:data.get('url'),filter:data.get('filter')})).secret))}><label>Public HTTPS endpoint<input name="url" type="url" required/></label><label>Domain or address filter<input name="filter" placeholder="All addresses"/></label><button className="primary">Add webhook</button></form>
-        {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span>{item.url}</span><small>{item.filter||'All addresses'}</small><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
+        <h2 id="webhook-heading">Webhooks</h2>
+        <form className="settings-form" aria-labelledby="webhook-heading" onSubmit={e=>submit(e,async data=>{
+          const hook=await api<{secret:string}>('/hooks','POST',{
+            url:data.get('url'),filter:data.get('filter'),addressOnly:data.has('addressOnly')
+          });
+          setCredential(hook.secret);setAddressOnlyHook(false);
+        })}>
+          <label>Public HTTPS endpoint<input name="url" type="url" required/></label>
+          <label>Domain or address filter<input name="filter" disabled={addressOnlyHook} placeholder="All addresses"/></label>
+          <div className="compact webhook-option"><input id="webhook-address-only" name="addressOnly" type="checkbox" checked={addressOnlyHook} onChange={e=>setAddressOnlyHook(e.target.checked)}/><label htmlFor="webhook-address-only">Only selected addresses</label></div>
+          <button type="submit" className="primary">Add webhook</button>
+        </form>
+        {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span>{item.url}</span><small>{item.address_only?'Selected addresses':item.filter||'All addresses'}</small><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
         <h2>Delivery attempts</h2><button onClick={()=>void action(refresh)}>Refresh history</button>
         {integration?.deliveries.length===0&&<p className="empty-state">No deliveries yet.</p>}
         {integration?.deliveries.map((item,index)=><div className="settings-row compact" key={item.id+index}><span>{item.url}</span><small>{when(item.attempted)} · {item.result}</small><button onClick={()=>void action(async()=>{await api('/replay/'+item.id,'POST');await refresh();},'Replay queued')}>Replay</button></div>)}

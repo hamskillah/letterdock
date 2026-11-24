@@ -277,7 +277,7 @@ app.route<{Params:{name:string}}>({
   }
 });
 app.get('/api/inboxes', async () => (await db.query(`
-  SELECT i.address,i.name,i.pinned,coalesce(counts.unread,0) AS unread
+  SELECT i.address,i.name,i.pinned,i.auto_label,i.webhook_id,coalesce(counts.unread,0) AS unread
   FROM inboxes i LEFT JOIN (
     SELECT recipient,count(*)::int AS unread FROM messages
     WHERE folder='inbox' AND unread GROUP BY recipient
@@ -307,6 +307,21 @@ app.patch<{Body:{address:string,name:string,pinned:boolean}}>('/api/inboxes',asy
   if(!result.rowCount)return res.code(404).send({message:'Inbox not found.'});
   return {ok:true};
 });
+app.get('/api/inbox-rule-hooks',async()=> (await db.query(
+  'SELECT id,url FROM hooks WHERE address_only ORDER BY url,id'
+)).rows);
+app.patch<{Body:{address:string;label:string;webhookId:string|null}}>('/api/inbox-rules',async(req,res)=>{
+  const {address,label,webhookId}=req.body??{};
+  if(typeof address!=='string'||address.length>254||typeof label!=='string'||label.trim().length>60||label.includes('\0')
+    ||(webhookId!==null&&(typeof webhookId!=='string'||!uuid.test(webhookId)))) {
+    return res.code(400).send({message:'Select an address, a label up to 60 characters, and an optional webhook.'});
+  }
+  const result=await db.query(`UPDATE inboxes SET auto_label=$2,webhook_id=$3 WHERE address=$1
+    AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM hooks WHERE id=$3 AND address_only FOR KEY SHARE))`,
+    [address,label.trim()||null,webhookId]);
+  if(!result.rowCount)return res.code(422).send({message:'The address or selected webhook is no longer available.'});
+  return {ok:true};
+});
 app.get('/api/blocks',async()=> (await db.query('SELECT sender FROM blocks ORDER BY sender')).rows);
 app.post<{Body:{sender:string,remove?:boolean}}>('/api/blocks',async(req,res)=>{
   const sender=String(req.body?.sender??'').trim().toLowerCase();
@@ -316,7 +331,7 @@ app.post<{Body:{sender:string,remove?:boolean}}>('/api/blocks',async(req,res)=>{
 });
 app.get('/api/integrations',async()=>({
   keys:(await db.query('SELECT id,name,domain FROM api_keys ORDER BY name')).rows,
-  hooks:(await db.query('SELECT id,url,filter FROM hooks ORDER BY url')).rows,
+  hooks:(await db.query('SELECT id,url,filter,address_only FROM hooks ORDER BY url')).rows,
   deliveries:(await db.query(`SELECT d.id,d.status,d.attempts,h.url,l.result,l.attempted FROM delivery_log l
     JOIN deliveries d ON d.id=l.delivery JOIN hooks h ON h.id=d.hook ORDER BY l.id DESC LIMIT 100`)).rows
 }));
@@ -330,12 +345,14 @@ app.post<{Body:{name:string;domain:string}}>('/api/keys',async (req,res)=>{
   if(!result.rowCount)return res.code(422).send({message:'Select a verified domain.'});
   return {secret:key};
 });
-app.post<{Body:{url:string,filter?:string}}>('/api/hooks',async(req,res)=>{
+app.post<{Body:{url:string,filter?:string,addressOnly?:boolean}}>('/api/hooks',async(req,res)=>{
   let url:URL;
   try { url=new URL(req.body?.url); if(url.protocol!=='https:'||url.username||url.password) throw Error(); }
   catch{return res.code(400).send({message:'Enter a public HTTPS URL'});}
   const secret='whsec_'+randomBytes(32).toString('base64');
-  await db.query('INSERT INTO hooks(url,secret,filter) VALUES($1,$2,$3)',[url.href,encryptSecret(secret,'webhook'),String(req.body.filter??'').trim().toLowerCase()]);
+  const addressOnly=req.body.addressOnly===true;
+  await db.query('INSERT INTO hooks(url,secret,filter,address_only) VALUES($1,$2,$3,$4)',
+    [url.href,encryptSecret(secret,'webhook'),addressOnly?'':String(req.body.filter??'').trim().toLowerCase(),addressOnly]);
   return {secret};
 });
 app.delete<{Params:{type:string,id:string}}>('/api/integrations/:type/:id',async(req,res)=>{

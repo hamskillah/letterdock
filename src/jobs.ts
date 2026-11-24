@@ -158,9 +158,20 @@ export async function parseNext() {
       FROM messages m WHERE m.id=$1 AND d.name=m.domain AND d.removed_at IS NULL
       AND d.verified AND d.delivery_test_address=m.recipient AND d.delivery_verified_at IS NULL
       AND m.received BETWEEN d.delivery_test_expires - interval '30 minutes' AND d.delivery_test_expires`, [id]);
-    await client.query(`INSERT INTO deliveries(hook,message)
-      SELECT h.id,m.id FROM hooks h JOIN messages m ON m.id=$1
-      WHERE h.filter='' OR h.filter=m.domain OR h.filter=m.recipient ON CONFLICT DO NOTHING`, [id]);
+    await client.query(`
+      WITH rule AS (
+        SELECT m.id,m.domain,m.recipient,i.auto_label,i.webhook_id
+        FROM messages m LEFT JOIN inboxes i ON i.address=m.recipient WHERE m.id=$1
+      ), labeled AS (
+        UPDATE messages m SET labels=array_append(m.labels,r.auto_label)
+        FROM rule r WHERE m.id=r.id AND r.auto_label IS NOT NULL AND NOT (r.auto_label=ANY(m.labels))
+      )
+      INSERT INTO deliveries(hook,message)
+      SELECT h.id,r.id FROM hooks h CROSS JOIN rule r
+      WHERE (h.address_only AND h.id=r.webhook_id)
+         OR (NOT h.address_only AND h.filter IN ('',r.domain,r.recipient))
+      FOR KEY SHARE OF h
+      ON CONFLICT DO NOTHING`, [id]);
     await client.query('COMMIT');
     return true;
   } catch (error) {

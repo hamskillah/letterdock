@@ -47,6 +47,10 @@ export async function migrate() {
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), url text NOT NULL, secret text NOT NULL,
       filter text NOT NULL DEFAULT ''
     );
+    ALTER TABLE hooks ADD COLUMN IF NOT EXISTS address_only boolean NOT NULL DEFAULT false;
+    ALTER TABLE inboxes ADD COLUMN IF NOT EXISTS auto_label text;
+    ALTER TABLE inboxes ADD COLUMN IF NOT EXISTS webhook_id uuid REFERENCES hooks(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS inboxes_webhook ON inboxes(webhook_id) WHERE webhook_id IS NOT NULL;
     CREATE TABLE IF NOT EXISTS deliveries (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), hook uuid NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,
       message uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE, attempts integer NOT NULL DEFAULT 0,
