@@ -23,6 +23,9 @@ export async function migrate() {
       starred boolean NOT NULL DEFAULT false, folder text NOT NULL DEFAULT 'inbox',
       labels text[] NOT NULL DEFAULT '{}'
     );
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS trashed_at timestamptz;
+    UPDATE messages SET trashed_at=now() WHERE folder='trash' AND trashed_at IS NULL;
+    CREATE INDEX IF NOT EXISTS messages_trash_age ON messages(trashed_at,id) WHERE folder='trash';
     CREATE INDEX IF NOT EXISTS messages_received ON messages(received DESC, id DESC);
     CREATE INDEX IF NOT EXISTS messages_domain_received ON messages(domain,received,id);
     CREATE INDEX IF NOT EXISTS messages_pending ON messages(id) WHERE state='pending';

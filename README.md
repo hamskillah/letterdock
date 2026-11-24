@@ -138,6 +138,9 @@ processing errors and quota failures.
   3650 days and confirm to permanently delete older email and attachments
   across that domain's folders. PostgreSQL can reuse deleted rows' space
   through autovacuum. The separate retention setting moves mail to Trash.
+- **Trash** automatically deletes messages and attachments after 30 days in
+  Trash. Existing Trash messages get 30 days from the upgrade. A domain's
+  shorter Auto-prune policy may delete them sooner.
 
 ## Storage limits, backups, and upgrades
 

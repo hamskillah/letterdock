@@ -98,6 +98,8 @@ app.patch<{Body:{ids:string[],folder?:string,unread?:boolean,starred?:boolean,la
   if(!Array.isArray(b?.ids)||!b.ids.length||b.ids.length>100||!b.ids.every(id=>uuid.test(id))) return res.code(400).send({message:'Select valid messages'});
   if(b.folder && !['inbox','archive','trash'].includes(b.folder)) return res.code(400).send({message:'Invalid folder'});
   await db.query(`UPDATE messages SET folder=coalesce($2,folder), unread=coalesce($3,unread),
+    trashed_at=CASE WHEN $2 IS NULL THEN trashed_at
+      WHEN $2='trash' THEN coalesce(trashed_at,now()) ELSE NULL END,
     starred=coalesce($4,starred), labels=CASE WHEN $5::text IS NOT NULL AND NOT ($5=ANY(labels)) THEN labels||ARRAY[$5]
     WHEN $6::text IS NOT NULL THEN array_remove(labels,$6) ELSE labels END,
     state=CASE WHEN $7 AND state='failed' THEN 'pending' ELSE state END WHERE id=ANY($1::uuid[])`,

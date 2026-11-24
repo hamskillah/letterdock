@@ -147,12 +147,36 @@ try {
     await db.query('DELETE FROM messages WHERE id IN ($1,$2,$3)',[oldMail,freshMail,unrelatedMail]);
     await db.query('DELETE FROM domains WHERE name=$1',[pruneDomain]);
   }
+  const expiredTrash=randomUUID(), existingTrash=randomUUID(), retentionMail=randomUUID();
+  const trashDomain='trash-'+id+'.integration.example';
+  await db.query('INSERT INTO domains(name,verified,retention_days) VALUES($1,true,7)',[trashDomain]);
+  try {
+    await db.query(`INSERT INTO messages(id,domain,recipient,sender,raw,received,folder,state,trashed_at) VALUES
+      ($1,$4,'expired@'||$4,'sender@example.net',$5,now()-interval '60 days','trash','ready',now()-interval '31 days'),
+      ($2,$4,'legacy@'||$4,'sender@example.net',$5,now()-interval '60 days','trash','ready',NULL),
+      ($3,$4,'retention@'||$4,'sender@example.net',$5,now()-interval '60 days','inbox','ready',NULL)`,
+      [expiredTrash,existingTrash,retentionMail,trashDomain,raw]);
+    await db.query("INSERT INTO attachments(message,filename,mime,data) VALUES($1,'fixture.txt','text/plain',$2)",[expiredTrash,raw]);
+    await migrate();
+    for(let attempt=0;attempt<70;attempt++){
+      const progress=await db.query("SELECT id FROM messages WHERE id=$1 OR (id=$2 AND folder<>'trash')",[expiredTrash,retentionMail]);
+      if(!progress.rowCount)break;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    assert.equal((await db.query('SELECT 1 FROM messages WHERE id=$1',[expiredTrash])).rowCount,0);
+    assert.equal((await db.query('SELECT 1 FROM attachments WHERE message=$1',[expiredTrash])).rowCount,0);
+    assert.equal((await db.query(`SELECT id FROM messages WHERE id=ANY($1::uuid[]) AND folder='trash'
+      AND trashed_at>now()-interval '1 hour'`,[[existingTrash,retentionMail]])).rowCount,2);
+  } finally {
+    await db.query('DELETE FROM messages WHERE domain=$1',[trashDomain]);
+    await db.query('DELETE FROM domains WHERE name=$1',[trashDomain]);
+  }
   const bulkSubject='bulkfixture'+id.replaceAll('-','');
   const browser=await chromium.launch();
   try {
     for(const size of [{width:1440,height:900},{width:1024,height:800},{width:768,height:850},{width:390,height:844}]){
       if(size.width===390)await db.query('UPDATE messages SET unread=true WHERE id=$1',[id]);
-      const page=await browser.newPage({viewport:size});
+      const page=await browser.newPage({viewport:size,hasTouch:size.width===390});
       await page.goto(origin);
       await page.getByLabel('Admin password').fill(password);
       await page.getByRole('button',{name:'Sign in'}).click();
@@ -172,16 +196,25 @@ try {
         await searchBox.fill(bulkSubject);
         const selectAll=page.getByRole('checkbox',{name:'Select all',exact:true});
         const rows=page.locator('.message-row input[type="checkbox"]');
-        await rows.nth(99).waitFor();
+        const bulkRows=page.getByRole('button',{name:new RegExp(bulkSubject)});
+        await bulkRows.nth(99).waitFor();
+        assert.equal(await rows.count(),0);
         await page.getByRole('button',{name:'Load older messages'}).click();
-        await rows.nth(100).waitFor();
-        await rows.first().check();
+        await bulkRows.nth(100).waitFor();
+        await bulkRows.first().click({delay:550});
+        await rows.first().waitFor();
+        assert.equal(await rows.first().isChecked(),true);
         assert.equal(await selectAll.evaluate((input:HTMLInputElement)=>input.indeterminate),true);
         await selectAll.check();
         assert.equal(await page.locator('.message-row input:checked').count(),await rows.count());
-        await selectAll.uncheck();
+        await selectAll.click();
         assert.equal(await page.locator('.message-row input:checked').count(),0);
+        assert.equal(await rows.count(),0);
+        await bulkRows.first().press('Shift+Enter');
         await selectAll.check();
+        await page.locator('.bulk-toolbar').getByRole('button',{name:'Trash',exact:true}).click();
+        const bulkTrash=page.getByRole('dialog',{name:'Move 101 messages to Trash?'});
+        await bulkTrash.getByRole('button',{name:'Cancel'}).click();
         await page.getByRole('button',{name:'Mark read',exact:true}).click();
         await page.getByText('101 selected',{exact:true}).waitFor({state:'hidden'});
         assert.equal((await db.query('SELECT 1 FROM messages WHERE subject=$1 AND unread',[bulkSubject])).rowCount,0);
@@ -191,7 +224,19 @@ try {
       const mailRow=page.getByRole('button',{name:/Invoice 42/}).first();
       await mailRow.waitFor();
       if(size.width===1440||size.width===390)await mailRow.locator('.unread-dot').waitFor();
-      if(size.width===390)await page.locator('.mobile-unread-dot').waitFor();
+      if(size.width===390){
+        await page.locator('.mobile-unread-dot').waitFor();
+        const client=await page.context().newCDPSession(page);
+        const bounds=(await mailRow.boundingBox())!;
+        await client.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:bounds.x+bounds.width/2,y:bounds.y+bounds.height/2}]});
+        await page.getByRole('checkbox',{name:'Select all',exact:true}).waitFor();
+        await client.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+        const checked=page.locator('.message-row input:checked');
+        assert.equal(await checked.count(),1);
+        await checked.click();
+        await checked.waitFor({state:'detached'});
+        await client.detach();
+      }
       const badge=page.locator('.inbox-badge');
       const unreadBefore=size.width===1440?await badge.textContent():null;
       await mailRow.click();
@@ -204,6 +249,25 @@ try {
       }
       await page.getByRole('button',{name:'Headers'}).click();
       await page.getByText(/different@example.org/).first().waitFor();
+      if(size.width===1440){
+        const trashButton=page.getByRole('region',{name:'Message reader'}).getByRole('button',{name:'Trash',exact:true});
+        await trashButton.click();
+        const prompt=page.getByRole('dialog',{name:'Move message to Trash?'});
+        assert.match(await prompt.innerText(),/30 days/);
+        await prompt.getByRole('button',{name:'Cancel'}).click();
+        assert.equal((await db.query('SELECT folder FROM messages WHERE id=$1',[id])).rows[0].folder,'inbox');
+        await trashButton.click();
+        await prompt.getByRole('button',{name:'Move to Trash'}).click();
+        await mailRow.waitFor({state:'detached'});
+        const trashed=await db.query('SELECT folder,trashed_at FROM messages WHERE id=$1',[id]);
+        assert.equal(trashed.rows[0].folder,'trash');
+        assert(trashed.rows[0].trashed_at);
+        await fetch(origin+'/api/messages',{method:'PATCH',headers,body:JSON.stringify({ids:[id],folder:'trash'})});
+        assert.deepEqual((await db.query('SELECT trashed_at FROM messages WHERE id=$1',[id])).rows[0].trashed_at,trashed.rows[0].trashed_at);
+        await fetch(origin+'/api/messages',{method:'PATCH',headers,body:JSON.stringify({ids:[id],folder:'inbox'})});
+        assert.equal((await db.query('SELECT trashed_at FROM messages WHERE id=$1',[id])).rows[0].trashed_at,null);
+      }
+
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
       if(size.width<=860)await page.getByRole('button',{name:'Back to messages'}).click();
       if(size.width===1440){

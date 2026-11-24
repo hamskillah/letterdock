@@ -9,6 +9,7 @@ import sanitize from 'sanitize-html';
 import { managedIngress } from './cloudflare-ingress.js';
 import { decryptSecret } from './cloudflare.js';
 import { db } from './db.js';
+import { trashRetentionDays } from './trash-policy.js';
 
 const bucket = process.env.R2_BUCKET;
 const s3 = bucket ? new S3Client({ region: 'auto', endpoint: process.env.R2_ENDPOINT }) : null;
@@ -241,6 +242,16 @@ async function deliver() {
 
 async function applyRetention() {
   await db.query(`
+    WITH expired AS (
+      SELECT id FROM messages
+      WHERE folder='trash' AND trashed_at<=now()-($1 * interval '24 hours')
+      ORDER BY trashed_at,id
+      LIMIT 100
+      FOR UPDATE SKIP LOCKED
+    )
+    DELETE FROM messages m USING expired WHERE m.id=expired.id
+  `,[trashRetentionDays]);
+  await db.query(`
     WITH eligible AS (
       SELECT m.id FROM messages m JOIN domains d ON d.name=m.domain
       WHERE d.removed_at IS NULL AND d.prune_days IS NOT NULL
@@ -252,7 +263,7 @@ async function applyRetention() {
     )
     DELETE FROM messages m USING eligible WHERE m.id=eligible.id
   `);
-  await db.query(`UPDATE messages m SET folder='trash' FROM domains d
+  await db.query(`UPDATE messages m SET folder='trash',trashed_at=now() FROM domains d
     WHERE m.domain=d.name AND d.retention_days IS NOT NULL AND m.folder<>'trash'
     AND m.received < now()-make_interval(days => d.retention_days)`);
 }

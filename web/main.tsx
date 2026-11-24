@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Archive, ArrowLeft, ArrowDownToLine, ArrowUpRight, Boxes, ChevronLeft, ChevronRight, CircleGauge, Copy, Filter, Globe, Inbox, LogOut, Mail, Menu, Paperclip, Search, Settings2, Star, Trash2, X } from 'lucide-react';
 import './style.css';
+import { trashRetentionDays } from '../src/trash-policy.js';
 
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
 type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;error:string;attachments:{id:string;filename:string;mime:string;bytes:number}[]};
@@ -128,6 +129,7 @@ function App(){
   const [connecting,setConnecting]=useState(false);
   const [cloudflare,setCloudflare]=useState<Record<string,CloudflareStatus>>({});
   const [manualDomain,setManualDomain]=useState('');
+  const [trashPrompt,setTrashPrompt]=useState<{ids:string[];bulk:boolean}|null>(null);
   const [pruning,setPruning]=useState<{name:string;days:number}|null>(null);
   const [removing,setRemoving]=useState<string|null>(null);
   const [domainBusy,setDomainBusy]=useState<Record<string,string>>({});
@@ -152,6 +154,34 @@ function App(){
   const [bulkUpdating,setBulkUpdating]=useState(false);
   const [more,setMore]=useState(false);
   const [mobileNav,setMobileNav]=useState(false);
+  const press=useRef<{timer:number;x:number;y:number;pointer:number}|null>(null);
+  const heldMessage=useRef<string|null>(null);
+  function cancelPress(){
+    if(press.current)window.clearTimeout(press.current.timer);
+    press.current=null;
+  }
+  useEffect(()=>cancelPress,[]);
+  function toggleMessage(id:string){
+    setSelected(current=>current.includes(id)?current.filter(value=>value!==id):[...current,id]);
+  }
+  function startPress(event:React.PointerEvent<HTMLButtonElement>,id:string){
+    if(!event.isPrimary||event.button!==0)return;
+    heldMessage.current=null;
+    if(selected.length||bulkUpdating)return;
+    cancelPress();
+    press.current={
+      x:event.clientX,y:event.clientY,pointer:event.pointerId,
+      timer:window.setTimeout(()=>{
+        heldMessage.current=id;
+        setSelected([id]);
+        cancelPress();
+      },500)
+    };
+  }
+  function movePress(event:React.PointerEvent<HTMLButtonElement>){
+    const current=press.current;
+    if(current&&event.pointerId===current.pointer&&Math.hypot(event.clientX-current.x,event.clientY-current.y)>10)cancelPress();
+  }
   const searchInput=useRef<HTMLInputElement>(null);
   const menuButton=useRef<HTMLButtonElement>(null);
   const closeMenuButton=useRef<HTMLButtonElement>(null);
@@ -384,10 +414,10 @@ function App(){
       await refresh();
     });
   }
-  async function updateSelection(patch:Record<string,unknown>){
+  async function updateSelection(patch:Record<string,unknown>,ids=selected){
     if(bulkUpdating)return;
     setBulkUpdating(true);
-    try {await update(selected,patch);}
+    try {await update(ids,patch);}
     finally {setBulkUpdating(false);}
   }
   function submit<T>(event:React.FormEvent<HTMLFormElement>, handler:(data:FormData)=>Promise<T>){
@@ -444,6 +474,7 @@ function App(){
           <div className="list-head">
             <div className="list-title"><h1>{heading}</h1></div>
             {address&&visibleAddresses.some(item=>item.address===address)&&<button className="inbox-settings-link" onClick={()=>void action(async()=>{await openAddressSettings(address);setAddressQuery(address);setAddressDomain('');await navigate('Addresses');})}><Settings2 size={14}/> Address settings</button>}
+            {folder==='trash'&&<p className="trash-note">Messages and attachments are permanently deleted after {trashRetentionDays} days in Trash.</p>}
             <div className="search"><Search size={17} aria-hidden="true"/><input ref={searchInput} aria-label="Search messages" aria-keyshortcuts="/" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/>
               {query?<button className="icon" aria-label="Clear search" onClick={()=>{setQuery('');searchInput.current?.focus();}}><X size={15}/></button>:<kbd aria-hidden="true">/</kbd>}
               <button className={'icon '+(advanced?'filter-active':'')} aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button>
@@ -456,7 +487,7 @@ function App(){
               <label className="check"><input type="checkbox" checked={filters.attachment==='true'} onChange={e=>setFilters({...filters,attachment:e.target.checked?'true':''})}/>Has attachment</label>
               <button onClick={()=>{setFilters(blankFilters);setUnreadOnly(false);}}>Clear filters</button>
             </div>}
-            {!loading&&messages.length>0&&<div className="bulk-toolbar">
+            {!loading&&selected.length>0&&<div className="bulk-toolbar">
               <label title="Select all loaded messages">
                 <input type="checkbox" checked={allMessagesSelected} disabled={bulkUpdating}
                   ref={input=>{if(input)input.indeterminate=selected.length>0&&!allMessagesSelected;}}
@@ -467,15 +498,26 @@ function App(){
                 <span role="status">{selected.length} selected</span>
                 <button disabled={bulkUpdating} onClick={()=>void updateSelection({folder:folder==='inbox'?'archive':'inbox'})}>{folder==='inbox'?'Archive':'Restore'}</button>
                 <button disabled={bulkUpdating} onClick={()=>void updateSelection({unread:false})}>Mark read</button>
-                {folder!=='trash'&&<button disabled={bulkUpdating} onClick={()=>void updateSelection({folder:'trash'})}>Trash</button>}
+                {folder!=='trash'&&<button disabled={bulkUpdating} onClick={()=>setTrashPrompt({ids:selected,bulk:true})}>Trash</button>}
               </div>}
             </div>}
           </div>
-          <div className="rows">
+          <div className={selected.length?"rows selecting":"rows"}>
             {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><span><Inbox size={22}/></span><strong>{filtered?'No matching messages':'No messages here'}</strong>{filtered&&<button onClick={()=>{setQuery('');setFilters(blankFilters);setUnreadOnly(false);}}>Clear search and filters</button>}{!filtered&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
               <div className={'message-row '+(detail?.id===message.id?'chosen ':'')+(message.unread?'unread':'')} key={message.id}>
-                <input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selectedIds.has(message.id)} disabled={bulkUpdating} onChange={e=>setSelected(e.target.checked?[...selected,message.id]:selected.filter(id=>id!==message.id))}/>
-                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} onClick={()=>void open(message)}><span className="row-meta"><span className="row-sender"><span className="unread-dot" aria-hidden="true"/>{message.unread&&<span className="sr-only">Unread: </span>}<span className="ellipsis">{senderName(message.sender)}</span></span><time dateTime={message.received}>{emailDate.format(new Date(message.received))}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
+                {selected.length>0&&<input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selectedIds.has(message.id)} disabled={bulkUpdating} onChange={()=>toggleMessage(message.id)}/>}
+                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} aria-keyshortcuts="Shift+Enter"
+                  onPointerDown={event=>startPress(event,message.id)} onPointerMove={movePress}
+                  onPointerUp={cancelPress} onPointerCancel={cancelPress} onPointerLeave={cancelPress}
+                  onContextMenu={event=>event.preventDefault()} onKeyDown={event=>{
+                    if(event.key==='Enter'&&event.shiftKey&&!bulkUpdating){event.preventDefault();if(!event.repeat)toggleMessage(message.id);}
+                    if(event.key==='Escape'&&selected.length&&!bulkUpdating){event.preventDefault();setSelected([]);}
+                  }} onClick={event=>{
+                    if(event.detail>0&&heldMessage.current===message.id){heldMessage.current=null;return;}
+                    if(bulkUpdating)return;
+                    if(selected.length)toggleMessage(message.id);
+                    else void open(message);
+                  }}><span className="row-meta"><span className="row-sender"><span className="unread-dot" aria-hidden="true"/>{message.unread&&<span className="sr-only">Unread: </span>}<span className="ellipsis">{senderName(message.sender)}</span></span><time dateTime={message.received}>{emailDate.format(new Date(message.received))}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
                 <button className={'icon '+(message.starred?'starred':'')} aria-label={message.starred?'Remove star':'Star message'} onClick={()=>void update([message.id],{starred:!message.starred})}><Star size={16} fill={message.starred?'currentColor':'none'}/></button>
               </div>)}
             {more&&<button className="load-more" onClick={()=>void action(async()=>{const rows=await api<Message[]>(searchPath(messages.at(-1)?.id));setMessages([...messages,...rows]);setMore(rows.length===100);})}>Load older messages</button>}
@@ -488,7 +530,7 @@ function App(){
               <button className="icon mobile" aria-label="Back to messages" onClick={()=>setDetail(null)}><ArrowLeft size={19}/></button>
               <button onClick={()=>void update([detail.id],{unread:!detail.unread})}>{detail.unread?'Mark read':'Mark unread'}</button>
               <button onClick={()=>void update([detail.id],{folder:detail.folder==='inbox'?'archive':'inbox'})}>{detail.folder==='inbox'?'Archive':'Restore'}</button>
-              {detail.folder!=='trash'?<button onClick={()=>void update([detail.id],{folder:'trash'})}>Trash</button>:<button onClick={()=>{if(confirm('Permanently delete this message?'))void action(async()=>{await api('/messages/'+detail.id,'DELETE');setDetail(null);await refresh();});}}>Delete permanently</button>}
+              {detail.folder!=='trash'?<button onClick={()=>setTrashPrompt({ids:[detail.id],bulk:false})}>Trash</button>:<button onClick={()=>{if(confirm('Permanently delete this message?'))void action(async()=>{await api('/messages/'+detail.id,'DELETE');setDetail(null);await refresh();});}}>Delete permanently</button>}
               <a className="button" href={'/api/raw/'+detail.id}><ArrowDownToLine size={15}/>.eml</a>
               <div className="reader-navigation" aria-label="Message navigation">
                 <button className="icon" aria-label="Previous message" disabled={!previous} onClick={()=>{if(previous)void open(previous);}}><ChevronLeft size={17}/></button>
@@ -725,6 +767,21 @@ function App(){
         </section>
       </section>}
     </main>
+    {trashPrompt&&<dialog className="remove-dialog" aria-labelledby="trash-title" aria-describedby="trash-description"
+      ref={element=>{if(element&&!element.open)element.showModal();}} onClose={event=>{
+        const confirmed=event.currentTarget.returnValue==='confirm';
+        setTrashPrompt(null);
+        if(!confirmed)return;
+        if(trashPrompt.bulk)void updateSelection({folder:'trash'},trashPrompt.ids);
+        else void update(trashPrompt.ids,{folder:'trash'});
+      }}>
+      <h2 id="trash-title">Move {trashPrompt.ids.length===1?'message':trashPrompt.ids.length+' messages'} to Trash?</h2>
+      <p id="trash-description">You can restore messages from Trash before they are permanently deleted. Trash is cleared automatically after {trashRetentionDays} days. A domain’s Auto-prune schedule can delete messages sooner.</p>
+      <form method="dialog" className="compact">
+        <button value="cancel" autoFocus>Cancel</button>
+        <button value="confirm" className="danger-action">Move to Trash</button>
+      </form>
+    </dialog>}
     {pruning&&<dialog className="remove-dialog" aria-labelledby="prune-title" aria-describedby="prune-description"
       ref={element=>{if(element&&!element.open)element.showModal();}} onClose={event=>{
         const dialog=event.currentTarget;
