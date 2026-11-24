@@ -300,25 +300,26 @@ app.post<{Body:{local:string;domain:string;name?:string}}>('/api/inboxes',async(
   if(existing.rowCount)return res.code(409).send({message:'This address already has an inbox.'});
   return res.code(422).send({message:'Select a verified receiving domain.'});
 });
-app.patch<{Body:{address:string,name:string,pinned:boolean}}>('/api/inboxes',async(req,res)=>{
+app.patch<{Body:{address:string,name?:string,pinned:boolean}}>('/api/inboxes',async(req,res)=>{
   const b=req.body;
-  const result=await db.query('UPDATE inboxes SET name=$2,pinned=$3 WHERE address=$1',
-    [b?.address,String(b?.name??'').trim().slice(0,120),b?.pinned===true]);
+  const result=await db.query('UPDATE inboxes SET name=coalesce($2,name),pinned=$3 WHERE address=$1',
+    [b?.address,b?.name===undefined?null:String(b.name??'').trim().slice(0,120),b?.pinned===true]);
   if(!result.rowCount)return res.code(404).send({message:'Inbox not found.'});
   return {ok:true};
 });
 app.get('/api/inbox-rule-hooks',async()=> (await db.query(
   'SELECT id,url FROM hooks WHERE address_only ORDER BY url,id'
 )).rows);
-app.patch<{Body:{address:string;label:string;webhookId:string|null}}>('/api/inbox-rules',async(req,res)=>{
-  const {address,label,webhookId}=req.body??{};
+app.patch<{Body:{address:string;label:string;webhookId:string|null;name?:string}}>('/api/inbox-rules',async(req,res)=>{
+  const {address,label,webhookId,name}=req.body??{};
   if(typeof address!=='string'||address.length>254||typeof label!=='string'||label.trim().length>60||label.includes('\0')
+    ||(name!==undefined&&(typeof name!=='string'||name.trim().length>120||name.includes('\0')))
     ||(webhookId!==null&&(typeof webhookId!=='string'||!uuid.test(webhookId)))) {
     return res.code(400).send({message:'Select an address, a label up to 60 characters, and an optional webhook.'});
   }
-  const result=await db.query(`UPDATE inboxes SET auto_label=$2,webhook_id=$3 WHERE address=$1
+  const result=await db.query(`UPDATE inboxes SET auto_label=$2,webhook_id=$3,name=coalesce($4,name) WHERE address=$1
     AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM hooks WHERE id=$3 AND address_only FOR KEY SHARE))`,
-    [address,label.trim()||null,webhookId]);
+    [address,label.trim()||null,webhookId,name?.trim()??null]);
   if(!result.rowCount)return res.code(422).send({message:'The address or selected webhook is no longer available.'});
   return {ok:true};
 });

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Archive, ArrowLeft, ArrowDownToLine, ArrowUpRight, Boxes, ChevronLeft, ChevronRight, CircleGauge, Filter, Globe, Inbox, LogOut, Mail, Menu, Paperclip, Search, Star, Trash2, X } from 'lucide-react';
+import { Archive, ArrowLeft, ArrowDownToLine, ArrowUpRight, Boxes, ChevronLeft, ChevronRight, CircleGauge, Copy, Filter, Globe, Inbox, LogOut, Mail, Menu, Paperclip, Search, Settings2, Star, Trash2, X } from 'lucide-react';
 import './style.css';
 
 type Message = {id:string;recipient:string;sender:string;subject:string;received:string;unread:boolean;starred:boolean;folder:string;labels:string[];state:string};
@@ -134,10 +134,9 @@ function App(){
   const [domains,setDomains]=useState<Domain[]>([]);
   const [addressDomain,setAddressDomain]=useState('');
   const [addressQuery,setAddressQuery]=useState('');
-  const [addressEdit,setAddressEdit]=useState('');
   const [ruleAddress,setRuleAddress]=useState('');
   const [ruleHooks,setRuleHooks]=useState<{id:string;url:string}[]>([]);
-  const [addressOnlyHook,setAddressOnlyHook]=useState(false);
+  const [webhookScope,setWebhookScope]=useState('all');
   const [addresses,setAddresses]=useState<Address[]>([]);
   const [domain,setDomain]=useState('');
   const [address,setAddress]=useState('');
@@ -475,35 +474,37 @@ function App(){
               {(item.auto_label||item.webhook_id)&&<p>{[item.auto_label&&'Auto-label: '+item.auto_label,item.webhook_id&&'Webhook assigned'].filter(Boolean).join(' · ')}</p>}
             </div></div>
             <div className="compact address-actions">
-              {item.unread>0&&<span className="address-count" aria-label={item.unread+' unread messages'}>{item.unread} unread</span>}
-              <button aria-pressed={item.pinned} onClick={()=>void action(async()=>{
-                await api('/inboxes','PATCH',{address:item.address,name:item.name,pinned:!item.pinned});await directory();
-              })}><Star size={15} fill={item.pinned?'currentColor':'none'}/>{item.pinned?'Unpin':'Pin'}</button>
-              <button aria-expanded={ruleAddress===item.address} aria-controls={ruleAddress===item.address?'address-rules':undefined} onClick={()=>void action(async()=>{
+              {item.unread>0&&<span className="address-count">{item.unread} unread</span>}
+              <button className="icon" aria-label={item.pinned?'Unpin':'Pin'} title={item.pinned?'Unpin':'Pin'} aria-pressed={item.pinned} onClick={()=>void action(async()=>{
+                await api('/inboxes','PATCH',{address:item.address,pinned:!item.pinned});await directory();
+              })}><Star size={16} fill={item.pinned?'currentColor':'none'}/></button>
+              <button aria-expanded={ruleAddress===item.address} aria-controls={ruleAddress===item.address?'address-settings':undefined} onClick={()=>void action(async()=>{
                 if(ruleAddress===item.address){setRuleAddress('');return;}
                 setRuleHooks(await api('/inbox-rule-hooks'));
-                setAddressEdit('');setRuleAddress(item.address);
-              })}>Rules</button>
-              <button onClick={()=>{setRuleAddress('');setAddressEdit(addressEdit===item.address?'':item.address);}}>Rename</button>
-              <button onClick={()=>void action(()=>navigator.clipboard.writeText(item.address),'Address copied')}>Copy</button>
+                setRuleAddress(item.address);
+              })}><Settings2 size={15}/> Settings</button>
               <button onClick={()=>mailbox('inbox','',item.address)}>Open inbox <ArrowUpRight size={14}/></button>
             </div>
-            {addressEdit===item.address&&<form className="compact address-edit" onSubmit={event=>submit(event,async data=>{
-              await api('/inboxes','PATCH',{address:item.address,name:data.get('name'),pinned:item.pinned});setAddressEdit('');
-            })}><label>Display name<input name="name" maxLength={120} defaultValue={item.name}/></label><button className="primary">Save name</button><button type="button" onClick={()=>setAddressEdit('')}>Cancel</button></form>}
-            {ruleAddress===item.address&&<form id="address-rules" aria-label={'Rules for '+item.address} className="address-edit address-rules" onSubmit={event=>submit(event,async data=>{
-              await api('/inbox-rules','PATCH',{address:item.address,label:data.get('label'),webhookId:data.get('webhook')||null});
+            {ruleAddress===item.address&&<form id="address-settings" aria-label={'Settings for '+item.address} className="address-rules" onSubmit={event=>submit(event,async data=>{
+              await api('/inbox-rules','PATCH',{address:item.address,name:data.get('name'),label:data.get('label'),webhookId:data.get('webhook')||null});
               setRuleAddress('');
-              setNotice('Address rules saved');
+              setNotice('Address settings saved');
             })}>
-              <p>Applies when new mail is processed for this address.</p>
-              <label htmlFor="rule-label">Automatic label<input id="rule-label" name="label" maxLength={60} defaultValue={item.auto_label??''}/></label>
-              <label htmlFor="rule-webhook">Additional webhook<select id="rule-webhook" name="webhook" aria-describedby="rule-webhook-help" defaultValue={item.webhook_id??''}>
-                <option value="">None</option>
-                {ruleHooks.map(hook=><option key={hook.id} value={hook.id}>{hook.url}</option>)}
-              </select></label>
-              <p id="rule-webhook-help">Create a webhook with “Only selected addresses” in <button className="link-button" type="button" onClick={()=>void navigate('Integrations')}>Integrations</button>.</p>
-              <div className="compact"><button type="submit" className="primary">Save rules</button><button type="button" onClick={()=>setRuleAddress('')}>Cancel</button></div>
+              <div className="address-settings-fields">
+                <label htmlFor="address-name">Display name<input id="address-name" name="name" maxLength={120} defaultValue={item.name}/></label>
+                <label htmlFor="rule-label">Automatic label<input id="rule-label" name="label" maxLength={60} defaultValue={item.auto_label??''} placeholder="None"/></label>
+                <label htmlFor="rule-webhook">Webhook for new mail<select id="rule-webhook" name="webhook" defaultValue={item.webhook_id??''}>
+                  <option value="">None</option>
+                  {ruleHooks.map(hook=><option key={hook.id} value={hook.id}>{hook.url}</option>)}
+                </select></label>
+              </div>
+              <div className="address-settings-footer">
+                <div className="compact">
+                  <button type="button" onClick={()=>void action(()=>navigator.clipboard.writeText(item.address),'Address copied')}><Copy size={14}/> Copy address</button>
+                  {ruleHooks.length===0&&<button type="button" onClick={()=>{setWebhookScope('selected');void navigate('Integrations');}}>Set up a webhook <ArrowUpRight size={14}/></button>}
+                </div>
+                <div className="compact"><button type="button" onClick={()=>setRuleAddress('')}>Cancel</button><button type="submit" className="primary">Save settings</button></div>
+              </div>
             </form>}
           </article>)}
           {matchingAddresses.length===0&&
@@ -631,15 +632,20 @@ function App(){
         <h2 id="webhook-heading">Webhooks</h2>
         <form className="settings-form" aria-labelledby="webhook-heading" onSubmit={e=>submit(e,async data=>{
           const hook=await api<{secret:string}>('/hooks','POST',{
-            url:data.get('url'),filter:data.get('filter'),addressOnly:data.has('addressOnly')
+            url:data.get('url'),filter:webhookScope==='filter'?data.get('filter'):null,addressOnly:webhookScope==='selected'
           });
-          setCredential(hook.secret);setAddressOnlyHook(false);
+          setCredential(hook.secret);setWebhookScope('all');
         })}>
           <label>Public HTTPS endpoint<input name="url" type="url" required/></label>
-          <label>Domain or address filter<input name="filter" disabled={addressOnlyHook} placeholder="All addresses"/></label>
-          <div className="compact webhook-option"><input id="webhook-address-only" name="addressOnly" type="checkbox" checked={addressOnlyHook} onChange={e=>setAddressOnlyHook(e.target.checked)}/><label htmlFor="webhook-address-only">Only selected addresses</label></div>
+          <label>Receive events from<select name="scope" aria-describedby={webhookScope==='selected'?'webhook-scope-help':undefined} value={webhookScope} onChange={e=>setWebhookScope(e.target.value)}>
+            <option value="all">All addresses</option>
+            <option value="filter">One domain or address</option>
+            <option value="selected">Selected addresses</option>
+          </select></label>
+          {webhookScope==='filter'&&<label>Domain or address<input name="filter" required placeholder="example.com"/></label>}
           <button type="submit" className="primary">Add webhook</button>
         </form>
+        {webhookScope==='selected'&&<p id="webhook-scope-help" className="webhook-scope-help">Assign this webhook from the settings of each address.</p>}
         {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span>{item.url}</span><small>{item.address_only?'Selected addresses':item.filter||'All addresses'}</small><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
         <h2>Delivery attempts</h2><button onClick={()=>void action(refresh)}>Refresh history</button>
         {integration?.deliveries.length===0&&<p className="empty-state">No deliveries yet.</p>}

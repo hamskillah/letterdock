@@ -131,8 +131,8 @@ processing errors and quota failures.
 - **Webhooks** send signed `email.received` events to HTTPS endpoints.
   **Integrations** shows delivery attempts and provides replay.
 - **Address rules** can add a label and queue a webhook for new mail at an
-  exact recipient address. Create a webhook with **Only selected addresses**
-  in **Integrations**, then assign it under **Addresses → Rules**. Webhooks
+  exact recipient address. Create a webhook with **Selected addresses**
+  in **Integrations**, then assign it under **Addresses → Settings**. Webhooks
   with matching global, domain, or address filters continue to receive events.
 - **Auto-prune** is off by default. In **Domains**, choose an age from 1 to
   3650 days and confirm to permanently delete older email and attachments

@@ -172,6 +172,15 @@ try {
       await page.getByText(/different@example.org/).first().waitFor();
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
       if(size.width<=860)await page.getByRole('button',{name:'Back to messages'}).click();
+      if(size.width===1440){
+        await page.getByRole('button',{name:'Integrations',exact:true}).click();
+        const scope=page.getByLabel('Receive events from');
+        await scope.selectOption('filter');
+        await page.getByLabel('Domain or address',{exact:true}).waitFor();
+        await scope.selectOption('selected');
+        assert.equal(await page.getByLabel('Domain or address',{exact:true}).count(),0);
+        await page.getByText('Assign this webhook from the settings of each address.').waitFor();
+      }
       if(size.width<=860)await page.getByRole('button',{name:'Open menu'}).click();
       await page.getByRole('button',{name:'Addresses',exact:true}).click();
       await page.getByRole('heading',{name:'Addresses',exact:true}).waitFor();
@@ -182,11 +191,13 @@ try {
         const invalidRule=await fetch(origin+'/api/inbox-rules',{method:'PATCH',headers,
           body:JSON.stringify({address,label:'Invoices',webhookId:legacyHookId})});
         assert.equal(invalidRule.status,422);
-        await addressCard.getByRole('button',{name:'Rules',exact:true}).click();
+        await addressCard.getByRole('button',{name:'Settings',exact:true}).click();
+        await addressCard.getByLabel('Display name').fill('Accounts payable');
         await addressCard.getByLabel('Automatic label').fill('Invoices');
-        await addressCard.getByLabel('Additional webhook').selectOption(addressHookId);
-        await addressCard.getByRole('button',{name:'Save rules'}).click();
+        await addressCard.getByLabel('Webhook for new mail').selectOption(addressHookId);
+        await addressCard.getByRole('button',{name:'Save settings'}).click();
         await addressCard.getByText('Auto-label: Invoices · Webhook assigned',{exact:true}).waitFor();
+        await addressCard.getByRole('heading',{name:'Accounts payable'}).waitFor();
         const ruleMailId=randomUUID();
         await importMail(ruleMailId,'sender@example.net',address,raw);
         await parseNext();
@@ -196,9 +207,10 @@ try {
         assert.deepEqual(routed.rows,[{message:ruleMailId}]);
       }
       if(size.width===390){
-        await addressCard.getByRole('button',{name:'Rules',exact:true}).click();
+        await addressCard.getByRole('button',{name:'Settings',exact:true}).click();
+        assert.equal(await addressCard.getByLabel('Display name').inputValue(),'Accounts payable');
         assert.equal(await addressCard.getByLabel('Automatic label').inputValue(),'Invoices');
-        assert.equal(await addressCard.getByLabel('Additional webhook').inputValue(),addressHookId);
+        assert.equal(await addressCard.getByLabel('Webhook for new mail').inputValue(),addressHookId);
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
         await addressCard.getByRole('button',{name:'Cancel',exact:true}).click();
       }

@@ -156,15 +156,14 @@ button.primary:disabled:hover{background:var(--accent)}
 .address-identity h2{font-size:1rem;overflow-wrap:anywhere}
 .address-identity p{font-size:.81rem;margin-top:.2rem;overflow-wrap:anywhere}
 .address-count{color:var(--accent);font-size:.72rem;white-space:nowrap}
-.address-edit{grid-column:1/-1;align-items:end;padding-top:.75rem;border-top:1px solid var(--line)}
-.address-edit input:not([type=checkbox]){width:min(16rem,60vw)}
-.address-rules{display:grid;justify-items:start;gap:.65rem}
-.address-rules label{display:grid;gap:.3rem;width:min(100%,28rem)}
-.address-rules input:not([type=checkbox]),.address-rules select{width:100%;min-width:0}
-.address-rules p{font-size:.84rem;color:var(--muted)}
-.address-rules .link-button{display:inline;padding:0;border:0;background:none;color:var(--accent);text-decoration:underline}
-.webhook-option{align-items:center;align-self:center}
-.webhook-option input{margin:0;width:1rem;height:1rem}
+.address-actions .icon{min-width:36px;min-height:36px}
+.address-rules{grid-column:1/-1;min-width:0;display:grid;gap:1rem;background:#f6f8fe;border:1px solid var(--line);border-radius:8px;padding:.85rem}
+.address-settings-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.75rem}
+.address-settings-fields label{min-width:0;display:grid;gap:.3rem}
+.address-settings-fields input,.address-settings-fields select{width:100%;min-width:0}
+.address-settings-footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:.6rem}
+.webhook-scope-help{font-size:.84rem;color:var(--muted);margin-top:-.4rem}
+@media(max-width:650px){.address-settings-fields{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:900px){.address-add{grid-template-columns:repeat(2,minmax(0,1fr))}.address-add button{justify-self:start}.address-row{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:480px){.address-add,.address-tools{grid-template-columns:minmax(0,1fr)}.address-row{padding:.75rem}}
 
