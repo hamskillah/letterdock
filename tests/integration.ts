@@ -147,6 +147,7 @@ try {
     await db.query('DELETE FROM messages WHERE id IN ($1,$2,$3)',[oldMail,freshMail,unrelatedMail]);
     await db.query('DELETE FROM domains WHERE name=$1',[pruneDomain]);
   }
+  const bulkSubject='bulkfixture'+id.replaceAll('-','');
   const browser=await chromium.launch();
   try {
     for(const size of [{width:1440,height:900},{width:1024,height:800},{width:768,height:850},{width:390,height:844}]){
@@ -165,6 +166,26 @@ try {
         await searchBox.fill('nonexistent fixture');
         await page.getByRole('button',{name:'Clear search',exact:true}).click();
         assert.equal(await searchBox.inputValue(),'');
+        await db.query(`INSERT INTO messages(id,domain,recipient,sender,raw,subject,state)
+          SELECT gen_random_uuid(),$1,$2,'sender@example.net',$3,$4,'ready'
+          FROM generate_series(1,101)`,[domain,recipient,raw,bulkSubject]);
+        await searchBox.fill(bulkSubject);
+        const selectAll=page.getByRole('checkbox',{name:'Select all',exact:true});
+        const rows=page.locator('.message-row input[type="checkbox"]');
+        await rows.nth(99).waitFor();
+        await page.getByRole('button',{name:'Load older messages'}).click();
+        await rows.nth(100).waitFor();
+        await rows.first().check();
+        assert.equal(await selectAll.evaluate((input:HTMLInputElement)=>input.indeterminate),true);
+        await selectAll.check();
+        assert.equal(await page.locator('.message-row input:checked').count(),await rows.count());
+        await selectAll.uncheck();
+        assert.equal(await page.locator('.message-row input:checked').count(),0);
+        await selectAll.check();
+        await page.getByRole('button',{name:'Mark read',exact:true}).click();
+        await page.getByText('101 selected',{exact:true}).waitFor({state:'hidden'});
+        assert.equal((await db.query('SELECT 1 FROM messages WHERE subject=$1 AND unread',[bulkSubject])).rowCount,0);
+        await db.query('DELETE FROM messages WHERE subject=$1',[bulkSubject]);
       }
       await searchBox.fill(recipient);
       const mailRow=page.getByRole('button',{name:/Invoice 42/}).first();
@@ -305,7 +326,10 @@ try {
       }
       await page.close();
     }
-  } finally { await browser.close(); }
+  } finally {
+    await browser.close();
+    await db.query('DELETE FROM messages WHERE subject=$1',[bulkSubject]);
+  }
   assert.equal((await sdk.emails.receiving.get(id)).data?.id,id);
   await db.query("UPDATE domains SET retention_days=1 WHERE name=$1",[domain]);
   await db.query("UPDATE messages SET received=now()-interval '2 days' WHERE id=$1",[id]);

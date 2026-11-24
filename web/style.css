@@ -351,3 +351,8 @@ select {border:1px solid var(--line);border-radius:var(--radius);padding:.6rem .
   .settings-panel .settings-form select{width:100%}
   .settings-panel .settings-form>button{justify-self:start}
 }
+
+.bulk-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem .75rem}
+.bulk-toolbar label{display:inline-flex;align-items:center;gap:.45rem;min-height:44px;cursor:pointer}
+.bulk-toolbar label input{margin:0}
+.bulk-toolbar .compact{font-size:.78rem;color:var(--muted)}

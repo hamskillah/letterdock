@@ -149,6 +149,7 @@ function App(){
   const [filters,setFilters]=useState(blankFilters);
   const [advanced,setAdvanced]=useState(false);
   const [selected,setSelected]=useState<string[]>([]);
+  const [bulkUpdating,setBulkUpdating]=useState(false);
   const [more,setMore]=useState(false);
   const [mobileNav,setMobileNav]=useState(false);
   const searchInput=useRef<HTMLInputElement>(null);
@@ -362,13 +363,32 @@ function App(){
   }
   async function update(ids:string[], patch:Record<string,unknown>){
     await action(async()=>{
-      await api('/messages','PATCH',{ids,...patch});
+      let completed=0;
+      try {
+        while(completed<ids.length){
+          const batch=ids.slice(completed,completed+100);
+          await api('/messages','PATCH',{ids:batch,...patch});
+          completed+=batch.length;
+        }
+      } catch(cause){
+        if(!completed||cause instanceof AccessError)throw cause;
+        setSelected([]);
+        await refresh();
+        throw Error(`Updated ${completed} of ${ids.length} messages. Select the remaining messages and try again.`);
+      }
       if(detail&&ids.includes(detail.id)){
         if(patch.folder&&patch.folder!==folder)setDetail(null);
         else setDetail(await api('/messages/'+detail.id));
       }
-      setSelected([]);await refresh();
+      setSelected([]);
+      await refresh();
     });
+  }
+  async function updateSelection(patch:Record<string,unknown>){
+    if(bulkUpdating)return;
+    setBulkUpdating(true);
+    try {await update(selected,patch);}
+    finally {setBulkUpdating(false);}
   }
   function submit<T>(event:React.FormEvent<HTMLFormElement>, handler:(data:FormData)=>Promise<T>){
     event.preventDefault();
@@ -385,6 +405,8 @@ function App(){
   const visibleAddresses=addresses.filter(item=>!item.removed_at);
   const matchingAddresses = visibleAddresses.filter(item=>(!addressDomain||item.address.endsWith('@'+addressDomain))&&
     (item.name+' '+item.address).toLowerCase().includes(addressQuery.trim().toLowerCase()));
+  const selectedIds=new Set(selected);
+  const allMessagesSelected=messages.length>0&&messages.every(message=>selectedIds.has(message.id));
   const messageIndex=detail?messages.findIndex(message=>message.id===detail.id):-1;
   const previous=messageIndex>0?messages[messageIndex-1]:undefined;
   const next=messageIndex>=0?messages[messageIndex+1]:undefined;
@@ -434,12 +456,25 @@ function App(){
               <label className="check"><input type="checkbox" checked={filters.attachment==='true'} onChange={e=>setFilters({...filters,attachment:e.target.checked?'true':''})}/>Has attachment</label>
               <button onClick={()=>{setFilters(blankFilters);setUnreadOnly(false);}}>Clear filters</button>
             </div>}
-            {selected.length>0&&<div className="compact"><span>{selected.length} selected</span><button onClick={()=>void update(selected,{folder:folder==='inbox'?'archive':'inbox'})}>{folder==='inbox'?'Archive':'Restore'}</button><button onClick={()=>void update(selected,{unread:false})}>Mark read</button>{folder!=='trash'&&<button onClick={()=>void update(selected,{folder:'trash'})}>Trash</button>}</div>}
+            {!loading&&messages.length>0&&<div className="bulk-toolbar">
+              <label title="Select all loaded messages">
+                <input type="checkbox" checked={allMessagesSelected} disabled={bulkUpdating}
+                  ref={input=>{if(input)input.indeterminate=selected.length>0&&!allMessagesSelected;}}
+                  onChange={event=>setSelected(event.target.checked?messages.map(message=>message.id):[])}/>
+                Select all
+              </label>
+              {selected.length>0&&<div className="compact">
+                <span role="status">{selected.length} selected</span>
+                <button disabled={bulkUpdating} onClick={()=>void updateSelection({folder:folder==='inbox'?'archive':'inbox'})}>{folder==='inbox'?'Archive':'Restore'}</button>
+                <button disabled={bulkUpdating} onClick={()=>void updateSelection({unread:false})}>Mark read</button>
+                {folder!=='trash'&&<button disabled={bulkUpdating} onClick={()=>void updateSelection({folder:'trash'})}>Trash</button>}
+              </div>}
+            </div>}
           </div>
           <div className="rows">
             {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><span><Inbox size={22}/></span><strong>{filtered?'No matching messages':'No messages here'}</strong>{filtered&&<button onClick={()=>{setQuery('');setFilters(blankFilters);setUnreadOnly(false);}}>Clear search and filters</button>}{!filtered&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
               <div className={'message-row '+(detail?.id===message.id?'chosen ':'')+(message.unread?'unread':'')} key={message.id}>
-                <input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selected.includes(message.id)} onChange={e=>setSelected(e.target.checked?[...selected,message.id]:selected.filter(id=>id!==message.id))}/>
+                <input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selectedIds.has(message.id)} disabled={bulkUpdating} onChange={e=>setSelected(e.target.checked?[...selected,message.id]:selected.filter(id=>id!==message.id))}/>
                 <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} onClick={()=>void open(message)}><span className="row-meta"><span className="row-sender"><span className="unread-dot" aria-hidden="true"/>{message.unread&&<span className="sr-only">Unread: </span>}<span className="ellipsis">{senderName(message.sender)}</span></span><time dateTime={message.received}>{emailDate.format(new Date(message.received))}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
                 <button className={'icon '+(message.starred?'starred':'')} aria-label={message.starred?'Remove star':'Star message'} onClick={()=>void update([message.id],{starred:!message.starred})}><Star size={16} fill={message.starred?'currentColor':'none'}/></button>
               </div>)}
