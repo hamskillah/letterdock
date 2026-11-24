@@ -277,7 +277,7 @@ app.route<{Params:{name:string}}>({
   }
 });
 app.get('/api/inboxes', async () => (await db.query(`
-  SELECT i.address,i.name,i.pinned,i.auto_label,i.webhook_id,coalesce(counts.unread,0) AS unread
+  SELECT i.address,i.name,i.pinned,i.auto_label,i.webhook_id,i.removed_at,coalesce(counts.unread,0) AS unread
   FROM inboxes i LEFT JOIN (
     SELECT recipient,count(*)::int AS unread FROM messages
     WHERE folder='inbox' AND unread GROUP BY recipient
@@ -294,17 +294,26 @@ app.post<{Body:{local:string;domain:string;name?:string}}>('/api/inboxes',async(
   if(address.length>254)return res.code(400).send({message:'Email address is too long.'});
   const result=await db.query(`INSERT INTO inboxes(address,name)
     SELECT $1,$2 FROM domains WHERE name=$3 AND verified AND removed_at IS NULL
-    ON CONFLICT DO NOTHING RETURNING address`,[address,String(req.body?.name??'').trim().slice(0,120),domain]);
+    ON CONFLICT(address) DO UPDATE SET removed_at=NULL,name=excluded.name
+    WHERE inboxes.removed_at IS NOT NULL RETURNING address`,[address,String(req.body?.name??'').trim().slice(0,120),domain]);
   if(result.rowCount)return res.code(201).send({address});
-  const existing=await db.query('SELECT 1 FROM inboxes WHERE address=$1',[address]);
+  const existing=await db.query('SELECT 1 FROM inboxes WHERE address=$1 AND removed_at IS NULL',[address]);
   if(existing.rowCount)return res.code(409).send({message:'This address already has an inbox.'});
   return res.code(422).send({message:'Select a verified receiving domain.'});
 });
 app.patch<{Body:{address:string,name?:string,pinned:boolean}}>('/api/inboxes',async(req,res)=>{
   const b=req.body;
-  const result=await db.query('UPDATE inboxes SET name=coalesce($2,name),pinned=$3 WHERE address=$1',
+  const result=await db.query('UPDATE inboxes SET name=coalesce($2,name),pinned=$3 WHERE address=$1 AND removed_at IS NULL',
     [b?.address,b?.name===undefined?null:String(b.name??'').trim().slice(0,120),b?.pinned===true]);
   if(!result.rowCount)return res.code(404).send({message:'Inbox not found.'});
+  return {ok:true};
+});
+app.delete<{Querystring:{address:string}}>('/api/inboxes',async(req,res)=>{
+  const {address}=req.query;
+  if(typeof address!=='string'||!address||address.includes('\0'))return res.code(400).send({message:'Select an address.'});
+  const result=await db.query(`UPDATE inboxes SET removed_at=now(),name='',pinned=false,auto_label=NULL,webhook_id=NULL
+    WHERE address=$1 AND removed_at IS NULL`,[address]);
+  if(!result.rowCount)return res.code(404).send({message:'Address not found.'});
   return {ok:true};
 });
 app.get('/api/inbox-rule-hooks',async()=> (await db.query(
@@ -317,7 +326,7 @@ app.patch<{Body:{address:string;label:string;webhookId:string|null;name?:string}
     ||(webhookId!==null&&(typeof webhookId!=='string'||!uuid.test(webhookId)))) {
     return res.code(400).send({message:'Select an address, a label up to 60 characters, and an optional webhook.'});
   }
-  const result=await db.query(`UPDATE inboxes SET auto_label=$2,webhook_id=$3,name=coalesce($4,name) WHERE address=$1
+  const result=await db.query(`UPDATE inboxes SET auto_label=$2,webhook_id=$3,name=coalesce($4,name) WHERE address=$1 AND removed_at IS NULL
     AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM hooks WHERE id=$3 AND address_only FOR KEY SHARE))`,
     [address,label.trim()||null,webhookId,name?.trim()??null]);
   if(!result.rowCount)return res.code(422).send({message:'The address or selected webhook is no longer available.'});

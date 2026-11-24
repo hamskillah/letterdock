@@ -8,7 +8,7 @@ type Detail = Message & {body:string;html:string;headers:Record<string,unknown>;
 type Domain = {name:string;token:string;verified:boolean;last_received:string|null;retention_days:number|null;prune_days:number|null} & DeliveryTest;
 type CloudflareConnection = {canProvision:boolean;oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
-type Address = {address:string;name:string;pinned:boolean;unread:number;auto_label:string|null;webhook_id:string|null};
+type Address = {address:string;name:string;pinned:boolean;unread:number;auto_label:string|null;webhook_id:string|null;removed_at:string|null};
 type Integration = {keys:{id:string;name:string;domain:string|null}[];hooks:{id:string;url:string;filter:string;address_only:boolean}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
 type Health = {free:number;staging:{configured:boolean;lastChecked:string|null;moreWaiting:boolean;error:boolean};queues:{state:string;count:number;oldest:string}[];ingest:{id:string;recipient:string;status:string;time:string}[];deliveries:{status:string;count:number}[]};
 
@@ -135,6 +135,8 @@ function App(){
   const [addressDomain,setAddressDomain]=useState('');
   const [addressQuery,setAddressQuery]=useState('');
   const [ruleAddress,setRuleAddress]=useState('');
+  const [removingAddress,setRemovingAddress]=useState<string|null>(null);
+  const [addressRemovalPending,setAddressRemovalPending]=useState(false);
   const [ruleHooks,setRuleHooks]=useState<{id:string;url:string}[]>([]);
   const [webhookScope,setWebhookScope]=useState('all');
   const [addresses,setAddresses]=useState<Address[]>([]);
@@ -380,7 +382,8 @@ function App(){
     <form onSubmit={signIn}><label>Admin password<input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required/></label><button className="primary">Sign in <ArrowUpRight size={16}/></button></form>
     {error&&<p role="alert" className="error">{error}</p>}</div></main>;
 
-  const matchingAddresses = addresses.filter(item=>(!addressDomain||item.address.endsWith('@'+addressDomain))&&
+  const visibleAddresses=addresses.filter(item=>!item.removed_at);
+  const matchingAddresses = visibleAddresses.filter(item=>(!addressDomain||item.address.endsWith('@'+addressDomain))&&
     (item.name+' '+item.address).toLowerCase().includes(addressQuery.trim().toLowerCase()));
   const messageIndex=detail?messages.findIndex(message=>message.id===detail.id):-1;
   const previous=messageIndex>0?messages[messageIndex-1]:undefined;
@@ -418,7 +421,7 @@ function App(){
         <section className="message-list" aria-label="Message list">
           <div className="list-head">
             <div className="list-title"><h1>{heading}</h1></div>
-            {address&&<button className="inbox-settings-link" onClick={()=>void action(async()=>{await openAddressSettings(address);setAddressQuery(address);setAddressDomain('');await navigate('Addresses');})}><Settings2 size={14}/> Address settings</button>}
+            {address&&visibleAddresses.some(item=>item.address===address)&&<button className="inbox-settings-link" onClick={()=>void action(async()=>{await openAddressSettings(address);setAddressQuery(address);setAddressDomain('');await navigate('Addresses');})}><Settings2 size={14}/> Address settings</button>}
             <div className="search"><Search size={17} aria-hidden="true"/><input ref={searchInput} aria-label="Search messages" aria-keyshortcuts="/" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/>
               {query?<button className="icon" aria-label="Clear search" onClick={()=>{setQuery('');searchInput.current?.focus();}}><X size={15}/></button>:<kbd aria-hidden="true">/</kbd>}
               <button className={'icon '+(advanced?'filter-active':'')} aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button>
@@ -487,7 +490,7 @@ function App(){
           <label>Find an address<input type="search" placeholder="Search by address or name" value={addressQuery} onChange={e=>setAddressQuery(e.target.value)}/></label>
           <label>Domain<select value={addressDomain} onChange={e=>setAddressDomain(e.target.value)}>
             <option value="">All domains</option>
-            {[...new Set([...domains.map(item=>item.name),...addresses.map(item=>item.address.split('@').at(-1)!)])].sort().map(item=><option key={item}>{item}</option>)}
+            {[...new Set([...domains.map(item=>item.name),...visibleAddresses.map(item=>item.address.split('@').at(-1)!)])].sort().map(item=><option key={item}>{item}</option>)}
           </select></label>
         </div>
         <div className="address-list">
@@ -521,6 +524,7 @@ function App(){
               </div>
               <div className="address-settings-footer">
                 <div className="compact">
+                  <button type="button" className="danger" onClick={()=>setRemovingAddress(item.address)}><Trash2 size={14}/> Remove address</button>
                   <button type="button" onClick={()=>void action(()=>navigator.clipboard.writeText(item.address),'Address copied')}><Copy size={14}/> Copy address</button>
                   {ruleHooks.length===0&&<button type="button" onClick={()=>{setWebhookScope('selected');void navigate('Integrations');}}>Set up a webhook <ArrowUpRight size={14}/></button>}
                 </div>
@@ -529,7 +533,7 @@ function App(){
             </form>}
           </article>)}
           {matchingAddresses.length===0&&
-            <p className="empty-state">{addresses.length?'No addresses match these filters.':'No addresses yet. Add one above or receive an email at a new address.'}</p>}
+            <p className="empty-state">{visibleAddresses.length?'No addresses match these filters.':'No addresses yet. Add one above or receive an email at a new address.'}</p>}
         </div>
       </section>}
       {page==='Domains'&&<section className="settings domains-page">
@@ -699,6 +703,30 @@ function App(){
       <form method="dialog" className="compact">
         <button value="cancel" autoFocus>Cancel</button>
         <button value="confirm" className="danger-action">Confirm auto-prune</button>
+      </form>
+    </dialog>}
+    {removingAddress&&<dialog className="remove-dialog" aria-labelledby="remove-address-title" aria-describedby="remove-address-description"
+      ref={element=>{if(element&&!element.open)element.showModal();}} onClose={()=>setRemovingAddress(null)}>
+      <h2 id="remove-address-title">Remove address?</h2>
+      <p id="remove-address-description"><strong>{removingAddress}</strong> will be removed from Addresses and its settings cleared. Existing email stays in your inbox. The address will reappear if it receives new mail.</p>
+      <form method="dialog" className="compact" onSubmit={event=>{
+        if((event.nativeEvent as SubmitEvent).submitter?.getAttribute('value')!=='remove')return;
+        event.preventDefault();
+        if(addressRemovalPending)return;
+        setAddressRemovalPending(true);
+        void action(async()=>{
+          try {
+            await api('/inboxes?'+new URLSearchParams({address:removingAddress}),'DELETE');
+            setRuleAddress('');setRemovingAddress(null);
+            await directory();
+          } catch(cause){
+            setRemovingAddress(null);
+            throw cause;
+          } finally {setAddressRemovalPending(false);}
+        },'Address removed');
+      }}>
+        <button autoFocus disabled={addressRemovalPending}>Cancel</button>
+        <button value="remove" className="danger-action" disabled={addressRemovalPending}>Remove address</button>
       </form>
     </dialog>}
     {removing&&<dialog className="remove-dialog" aria-labelledby="remove-title" ref={element=>{if(element&&!element.open)element.showModal();}} onClose={()=>setRemoving(null)}>

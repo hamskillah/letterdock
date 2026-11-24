@@ -38,6 +38,7 @@ export async function migrate() {
     CREATE TABLE IF NOT EXISTS inboxes (
       address text PRIMARY KEY, name text NOT NULL DEFAULT '', pinned boolean NOT NULL DEFAULT false
     );
+    ALTER TABLE inboxes ADD COLUMN IF NOT EXISTS removed_at timestamptz;
     CREATE TABLE IF NOT EXISTS blocks (sender text PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS api_keys (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, hash text NOT NULL UNIQUE

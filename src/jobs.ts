@@ -53,7 +53,8 @@ export async function importMail(id: string, from: string, to: string, raw: Uint
       ), updated AS (
         UPDATE domains SET last_received=now() WHERE name=$2 AND EXISTS (SELECT FROM stored)
       ), inbox AS (
-        INSERT INTO inboxes(address) SELECT recipient FROM stored ON CONFLICT DO NOTHING
+        INSERT INTO inboxes(address) SELECT recipient FROM stored
+        ON CONFLICT(address) DO UPDATE SET removed_at=NULL WHERE inboxes.removed_at IS NOT NULL
       )
       SELECT status FROM logged
     `, [id,domain,from,recipient,raw.byteLength<=maxMessageBytes?Buffer.from(raw):null,raw.byteLength,

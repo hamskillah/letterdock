@@ -197,6 +197,29 @@ try {
       if(size.width<=860)await page.getByRole('button',{name:'Open menu'}).click();
       await page.getByRole('button',{name:'Addresses',exact:true}).click();
       await page.getByRole('heading',{name:'Addresses',exact:true}).waitFor();
+      if(size.width===390){
+        const removeLocal='remove+'+id.slice(0,8);
+        const removeAddress=removeLocal+'@'+domain;
+        const oldId=randomUUID();
+        await importMail(oldId,'sender@example.net',removeAddress,raw);
+        await parseNext();
+        await page.getByRole('button',{name:'Open menu'}).click();
+        await page.getByRole('button',{name:'Addresses',exact:true}).click();
+        await page.getByRole('searchbox',{name:'Find an address'}).fill(removeLocal);
+        const row=page.getByRole('heading',{name:removeAddress,exact:true}).locator('xpath=ancestor::article[1]');
+        await row.getByRole('button',{name:'Settings',exact:true}).click();
+        await row.getByRole('button',{name:'Remove address'}).click();
+        const dialog=page.getByRole('dialog',{name:'Remove address?'});
+        await dialog.getByRole('button',{name:'Cancel'}).click();
+        await row.getByRole('button',{name:'Remove address'}).click();
+        await dialog.getByRole('button',{name:'Remove address'}).click();
+        await page.getByText('Address removed',{exact:true}).waitFor();
+        await row.waitFor({state:'detached'});
+        assert.equal((await fetch(origin+'/api/messages/'+oldId,{headers})).status,200);
+        await importMail(randomUUID(),'sender@example.net',removeAddress,raw);
+        const recreated=await fetch(origin+'/api/inboxes',{headers}).then(response=>response.json());
+        assert.equal(recreated.find((inbox:{address:string})=>inbox.address===removeAddress).removed_at,null);
+      }
       await page.getByRole('searchbox',{name:'Find an address'}).fill(manual);
       const addressCard=page.getByText(manual+'@'+domain,{exact:true}).locator('xpath=ancestor::article[1]');
       if(size.width===1440){
