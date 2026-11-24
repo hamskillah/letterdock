@@ -499,20 +499,20 @@ function App(){
       <div className="brand">{logo}<span>Letterdock</span><button className="icon mobile" aria-label="Close menu" ref={closeMenuButton} onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
       <nav aria-label="Workspace">
         <span className="nav-caption">Mailbox</span>
-        <button className={page==='Inbox'&&heading==='Inbox'?'active':''} onClick={()=>mailbox()}><Inbox size={17}/>Inbox{inboxUnread>0&&<><span className="inbox-badge" aria-hidden="true">{inboxUnread>99?'99+':inboxUnread}</span><span className="sr-only">, {inboxUnread} unread</span></>}</button>
-        <button className={page==='Inbox'&&starOnly?'active':''} onClick={()=>mailbox('inbox','','',true)}><Star size={17}/>Starred</button>
-        <button className={page==='Inbox'&&folder==='archive'?'active':''} onClick={()=>mailbox('archive')}><Archive size={17}/>Archive</button>
-        <button className={page==='Inbox'&&folder==='trash'?'active':''} onClick={()=>mailbox('trash')}><Trash2 size={17}/>Trash</button>
+        <button className={page==='Inbox'&&heading==='Inbox'?'active':''} aria-current={page==='Inbox'&&heading==='Inbox'?'page':undefined} onClick={()=>mailbox()}><Inbox size={17}/>Inbox{inboxUnread>0&&<><span className="inbox-badge" aria-hidden="true">{inboxUnread>99?'99+':inboxUnread}</span><span className="sr-only">, {inboxUnread} unread</span></>}</button>
+        <button className={page==='Inbox'&&starOnly?'active':''} aria-current={page==='Inbox'&&starOnly?'page':undefined} onClick={()=>mailbox('inbox','','',true)}><Star size={17}/>Starred</button>
+        <button className={page==='Inbox'&&folder==='archive'?'active':''} aria-current={page==='Inbox'&&folder==='archive'?'page':undefined} onClick={()=>mailbox('archive')}><Archive size={17}/>Archive</button>
+        <button className={page==='Inbox'&&folder==='trash'?'active':''} aria-current={page==='Inbox'&&folder==='trash'?'page':undefined} onClick={()=>mailbox('trash')}><Trash2 size={17}/>Trash</button>
         <button className={page==='Addresses'?'active':''} aria-current={page==='Addresses'?'page':undefined} onClick={()=>void navigate('Addresses')}><Mail size={17}/>Addresses</button>
         <span className="nav-caption">Manage</span>
         {[['Domains',Globe],['Integrations',Boxes],['Health',CircleGauge]].map(([name,Icon])=>{
           const Glyph=Icon as typeof Globe;
-          return <button key={String(name)} className={page===name?'active':''} onClick={()=>void navigate(String(name))}><Glyph size={17}/>{String(name)}</button>;
+          return <button key={String(name)} className={page===name?'active':''} aria-current={page===name?'page':undefined} onClick={()=>void navigate(String(name))}><Glyph size={17}/>{String(name)}</button>;
         })}
         {domains.length>0&&<span className="nav-caption">Domains</span>}
-        {domains.map(item=><button title={item.name} key={item.name} className={domain===item.name&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox',item.name)}><span className={'dot '+(item.verified?'online':'')}/><span className="ellipsis">{item.name}</span></button>)}
+        {domains.map(item=><button title={item.name} key={item.name} className={domain===item.name&&page==='Inbox'?'active':''} aria-current={domain===item.name&&page==='Inbox'?'page':undefined} onClick={()=>mailbox('inbox',item.name)}><span className={'dot '+(item.verified?'online':'')}/><span className="ellipsis">{item.name}</span></button>)}
         {addresses.some(item=>item.pinned)&&<span className="nav-caption">Pinned addresses</span>}
-        {addresses.filter(item=>item.pinned).map(item=><button title={item.address} key={item.address} className={address===item.address&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox','',item.address)}><Mail size={15}/><span className="ellipsis">{item.name||item.address}</span>{item.unread>0&&<span className="address-count">{item.unread}</span>}</button>)}
+        {addresses.filter(item=>item.pinned).map(item=><button title={item.address} key={item.address} className={address===item.address&&page==='Inbox'?'active':''} aria-current={address===item.address&&page==='Inbox'?'page':undefined} onClick={()=>mailbox('inbox','',item.address)}><Mail size={15}/><span className="ellipsis">{item.name||item.address}</span>{item.unread>0&&<span className="address-count">{item.unread}</span>}</button>)}
       </nav>
       <button className="signout" onClick={()=>void action(async()=>{await api('/logout','POST');setAuthorized(false);setDetail(null);setMessages([]);})}><LogOut size={17}/>Sign out</button>
     </aside>
@@ -751,7 +751,7 @@ function App(){
           </select></label>
           <button className="primary">Create key</button>
         </form>}
-        {integration?.keys.map(item=><div className="settings-row compact" key={item.id}><span><strong>{item.name}</strong><small>{item.domain??'Disabled · Create a domain-scoped key'}</small></span><button onClick={()=>{if(confirm('Revoke this API key?'))void action(async()=>{await api('/integrations/key/'+item.id,'DELETE');await refresh();});}}>Revoke</button></div>)}
+        {integration?.keys.map(item=><div className="settings-row compact" key={item.id}><span className="integration-item"><strong>{item.name}</strong><small>{item.domain??'Disabled · Create a domain-scoped key'}</small></span><button onClick={()=>{if(confirm('Revoke this API key?'))void action(async()=>{await api('/integrations/key/'+item.id,'DELETE');await refresh();});}}>Revoke</button></div>)}
         </section><section className="settings-panel">
         <div className="dns-heading"><h2 id="webhook-heading">Webhooks</h2><button aria-expanded={integrationForm==='hook'} onClick={()=>{setWebhookScope('all');setIntegrationForm(current=>current==='hook'?null:'hook');}}>{integrationForm==='hook'?'Cancel':'New webhook'}</button></div>
         {integration?.hooks.length===0&&<p className="empty-state">No webhooks yet.</p>}
@@ -771,10 +771,10 @@ function App(){
           <button type="submit" className="primary">Add webhook</button>
         </form>
         {webhookScope==='selected'&&<p id="webhook-scope-help" className="webhook-scope-help">Assign this webhook from the settings of each address.</p>}</>}
-        {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span>{item.url}</span><small>{item.address_only?'Selected addresses':item.filter||'All addresses'}</small><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
+        {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span className="integration-item"><code className="integration-endpoint">{item.url}</code><small>{item.address_only?'Selected addresses':item.filter||'All addresses'}</small></span><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
         </section><section className="settings-panel"><div className="dns-heading"><h2>Delivery attempts</h2><button onClick={()=>void action(refresh)}>Refresh history</button></div>
         {integration?.deliveries.length===0&&<p className="empty-state">No deliveries yet.</p>}
-        {integration?.deliveries.map((item,index)=><div className="settings-row compact" key={item.id+index}><span>{item.url}</span><small>{when(item.attempted)} · {item.result}</small><button onClick={()=>void action(async()=>{await api('/replay/'+item.id,'POST');await refresh();},'Replay queued')}>Replay</button></div>)}
+        {integration?.deliveries.map((item,index)=><div className="settings-row compact" key={item.id+index}><span className="integration-item"><code className="integration-endpoint">{item.url}</code><small>{when(item.attempted)} · {item.result}</small></span><button onClick={()=>void action(async()=>{await api('/replay/'+item.id,'POST');await refresh();},'Replay queued')}>Replay</button></div>)}
         </section>
       </section>}
       {page==='Health'&&<section className="settings"><header className="settings-heading health-heading"><span className="section-icon"><CircleGauge size={21}/></span><h1>Health</h1><button onClick={()=>void action(refresh)}>Refresh</button></header>
