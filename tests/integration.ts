@@ -150,6 +150,7 @@ try {
   const browser=await chromium.launch();
   try {
     for(const size of [{width:1440,height:900},{width:1024,height:800},{width:768,height:850},{width:390,height:844}]){
+      if(size.width===390)await db.query('UPDATE messages SET unread=true WHERE id=$1',[id]);
       const page=await browser.newPage({viewport:size});
       await page.goto(origin);
       await page.getByLabel('Admin password').fill(password);
@@ -166,8 +167,20 @@ try {
         assert.equal(await searchBox.inputValue(),'');
       }
       await searchBox.fill(recipient);
-      await page.getByRole('button',{name:/Invoice 42/}).first().click();
+      const mailRow=page.getByRole('button',{name:/Invoice 42/}).first();
+      await mailRow.waitFor();
+      if(size.width===1440||size.width===390)await mailRow.locator('.unread-dot').waitFor();
+      if(size.width===390)await page.locator('.mobile-unread-dot').waitFor();
+      const badge=page.locator('.inbox-badge');
+      const unreadBefore=size.width===1440?await badge.textContent():null;
+      await mailRow.click();
       await page.getByRole('heading',{name:'Invoice 42'}).waitFor();
+      await mailRow.locator('.unread-dot').waitFor({state:'hidden'});
+      if(unreadBefore==='1')await badge.waitFor({state:'hidden'});
+      else if(unreadBefore&&unreadBefore!=='99+'){
+        await page.waitForFunction(count=>document.querySelector('.inbox-badge')?.textContent===count,
+          String(Number(unreadBefore)-1));
+      }
       await page.getByRole('button',{name:'Headers'}).click();
       await page.getByText(/different@example.org/).first().waitFor();
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
@@ -244,9 +257,11 @@ try {
         await card.getByText('In inbox',{exact:true}).first().waitFor();
       }
 
-      await card.getByRole('button',{name:'Set up domain'}).click();
+      await card.getByRole('button',{name:'Check DNS'}).click();
       await card.getByText(/uses another DNS provider/).waitFor();
-      await card.locator('details[open]').waitFor();
+      await card.getByText('Advanced settings',{exact:true}).click();
+      await card.getByRole('button',{name:'Re-run setup'}).click();
+      await card.getByRole('button',{name:'Verify DNS',exact:true}).waitFor();
       const off=card.getByText('Auto-prune · Off',{exact:true});
       await off.click();
       await card.getByRole('spinbutton',{name:'Delete email older than (days)'}).fill('3650');

@@ -27,7 +27,7 @@ const setupDomain = new URLSearchParams(location.search).get('setupDomain');
 const blankFilters={from:'',to:'',subject:'',label:'',since:'',until:'',attachment:''};
 const senderName=(value:string)=>value.match(/^(.+?)\s*<[^>]+>$/)?.[1].replace(/^"|"$/g,'')||value||'Unknown sender';
 const emailDate=new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric'});
-const logo=<img className="brand-mark" src="/letterdock.png" width="36" height="36" alt=""/>;
+const logo=<img className="brand-mark" src="/letterdock-mark.svg" width="36" height="36" alt=""/>;
 
 type DeliveryTest = {
   delivery_test_address:string|null;
@@ -242,7 +242,6 @@ function App(){
     if(!authorized||page!=='Inbox')return;
     const timer=setInterval(()=>{
       if(document.hidden)return;
-      directory().catch(fail);
       if(page==='Inbox'&&!selected.length)api<Message[]>(searchPath()).then(rows=>{
         setMessages(current=>current.length>100?current:rows);
         setMore(current=>messages.length>100?current:rows.length===100);
@@ -250,6 +249,25 @@ function App(){
     },10000);
     return ()=>clearInterval(timer);
   },[authorized,page,folder,domain,address,query,filters,starOnly,unreadOnly,selected.length,messages.length]);
+
+  useEffect(()=>{
+    if(!authorized)return;
+    let active=true;
+    let running=false;
+    async function updateUnread(){
+      if(document.hidden||running)return;
+      running=true;
+      try {
+        const inboxes=await api<Address[]>('/inboxes');
+        if(active)setAddresses(inboxes);
+      } catch(cause){
+        if(active&&cause instanceof AccessError)fail(cause);
+      } finally {running=false;}
+    }
+    const timer=window.setInterval(updateUnread,10000);
+    document.addEventListener('visibilitychange',updateUnread);
+    return ()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',updateUnread);};
+  },[authorized]);
 
   useEffect(()=>{
     if(!authorized||page!=='Domains')return;
@@ -321,13 +339,18 @@ function App(){
     setFolder(nextFolder);setDomain(nextDomain);setAddress(nextAddress);setStarOnly(stars);setDetail(null);
     setSelected([]);void navigate('Inbox');
   }
+  async function openAddressSettings(name:string){
+    setRuleHooks(await api('/inbox-rule-hooks'));
+    setRuleAddress(name);
+  }
   async function open(message:Message){
     await action(async()=>{
       const result=await api<Detail>('/messages/'+message.id);
       setView('Message');setDetail({...result,unread:false});
       if(message.unread){
         await api('/messages','PATCH',{ids:[message.id],unread:false});
-        setMessages(rows=>rows.map(row=>row.id===message.id?{...row,unread:false}:row));
+        setMessages(rows=>unreadOnly?rows.filter(row=>row.id!==message.id):rows.map(row=>row.id===message.id?{...row,unread:false}:row));
+        setAddresses(await api<Address[]>('/inboxes'));
       }
     });
   }
@@ -362,6 +385,7 @@ function App(){
   const messageIndex=detail?messages.findIndex(message=>message.id===detail.id):-1;
   const previous=messageIndex>0?messages[messageIndex-1]:undefined;
   const next=messageIndex>=0?messages[messageIndex+1]:undefined;
+  const inboxUnread=addresses.reduce((count,item)=>count+item.unread,0);
   const filtered=Boolean(query.trim()||unreadOnly||Object.values(filters).some(Boolean));
   const heading=address||domain||(starOnly?'Starred':folder==='inbox'?'Inbox':folder==='archive'?'Archive':'Trash');
   return <div className={'app '+(mobileNav?'show-nav ':'')+(detail&&page==='Inbox'?'show-detail':'')}>
@@ -370,7 +394,7 @@ function App(){
       <div className="brand">{logo}<span>Letterdock</span><button className="icon mobile" aria-label="Close menu" ref={closeMenuButton} onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
       <nav aria-label="Workspace">
         <span className="nav-caption">Mailbox</span>
-        <button className={page==='Inbox'&&heading==='Inbox'?'active':''} onClick={()=>mailbox()}><Inbox size={17}/>Inbox</button>
+        <button className={page==='Inbox'&&heading==='Inbox'?'active':''} onClick={()=>mailbox()}><Inbox size={17}/>Inbox{inboxUnread>0&&<><span className="inbox-badge" aria-hidden="true">{inboxUnread>99?'99+':inboxUnread}</span><span className="sr-only">, {inboxUnread} unread</span></>}</button>
         <button className={page==='Inbox'&&starOnly?'active':''} onClick={()=>mailbox('inbox','','',true)}><Star size={17}/>Starred</button>
         <button className={page==='Inbox'&&folder==='archive'?'active':''} onClick={()=>mailbox('archive')}><Archive size={17}/>Archive</button>
         <button className={page==='Inbox'&&folder==='trash'?'active':''} onClick={()=>mailbox('trash')}><Trash2 size={17}/>Trash</button>
@@ -388,15 +412,13 @@ function App(){
       <button className="signout" onClick={()=>void action(async()=>{await api('/logout','POST');setAuthorized(false);setDetail(null);setMessages([]);})}><LogOut size={17}/>Sign out</button>
     </aside>
     <main className="workspace" inert={mobileNav||undefined}>
-      <header className="topbar"><button className="icon mobile" aria-label="Open menu" aria-controls="workspace-navigation" aria-expanded={mobileNav} ref={menuButton} onClick={()=>setMobileNav(true)}><Menu size={20}/></button><span>Workspace</span><ChevronRight size={13} aria-hidden="true"/><strong>{page}</strong></header>
+      <header className="topbar"><button className="icon mobile" aria-label="Open menu" aria-controls="workspace-navigation" aria-expanded={mobileNav} ref={menuButton} onClick={()=>setMobileNav(true)}><Menu size={20}/>{inboxUnread>0&&<span className="mobile-unread-dot" aria-hidden="true"/>}</button><span>Workspace</span><ChevronRight size={13} aria-hidden="true"/><strong>{page}</strong><span className="sr-only" role="status">{inboxUnread>0?inboxUnread+' unread inbox messages':'No unread inbox messages'}</span></header>
       {(error||notice)&&<div className={error?'banner error':'banner'} role={error?'alert':'status'}>{error||notice}<button className="icon" aria-label="Dismiss" onClick={()=>{setError('');setNotice('');}}><X size={16}/></button></div>}
       {page==='Inbox'&&<div className="mail-layout">
         <section className="message-list" aria-label="Message list">
           <div className="list-head">
-            <div className="list-title"><h1>{heading}</h1>{!loading&&messages.length>0&&<span className="message-count" aria-label={messages.length+' loaded messages'}>{messages.length}{more?'+':''}</span>}</div>
-            {address&&<form className="compact" onSubmit={event=>submit(event,async data=>{
-              await api('/inboxes','PATCH',{address,name:data.get('name'),pinned:data.has('pinned')});
-            })} key={address}><input name="name" aria-label="Inbox name" placeholder="Inbox name" defaultValue={addresses.find(a=>a.address===address)?.name}/><label className="check"><input type="checkbox" name="pinned" defaultChecked={addresses.find(a=>a.address===address)?.pinned}/>Pin</label><button>Save</button></form>}
+            <div className="list-title"><h1>{heading}</h1></div>
+            {address&&<button className="inbox-settings-link" onClick={()=>void action(async()=>{await openAddressSettings(address);setAddressQuery(address);setAddressDomain('');await navigate('Addresses');})}><Settings2 size={14}/> Address settings</button>}
             <div className="search"><Search size={17} aria-hidden="true"/><input ref={searchInput} aria-label="Search messages" aria-keyshortcuts="/" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/>
               {query?<button className="icon" aria-label="Clear search" onClick={()=>{setQuery('');searchInput.current?.focus();}}><X size={15}/></button>:<kbd aria-hidden="true">/</kbd>}
               <button className={'icon '+(advanced?'filter-active':'')} aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button>
@@ -415,7 +437,7 @@ function App(){
             {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><span><Inbox size={22}/></span><strong>{filtered?'No matching messages':'No messages here'}</strong>{filtered&&<button onClick={()=>{setQuery('');setFilters(blankFilters);setUnreadOnly(false);}}>Clear search and filters</button>}{!filtered&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
               <div className={'message-row '+(detail?.id===message.id?'chosen ':'')+(message.unread?'unread':'')} key={message.id}>
                 <input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selected.includes(message.id)} onChange={e=>setSelected(e.target.checked?[...selected,message.id]:selected.filter(id=>id!==message.id))}/>
-                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} onClick={()=>void open(message)}><span className="row-meta"><span className="ellipsis">{senderName(message.sender)}</span><time dateTime={message.received}>{emailDate.format(new Date(message.received))}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
+                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} onClick={()=>void open(message)}><span className="row-meta"><span className="row-sender"><span className="unread-dot" aria-hidden="true"/>{message.unread&&<span className="sr-only">Unread: </span>}<span className="ellipsis">{senderName(message.sender)}</span></span><time dateTime={message.received}>{emailDate.format(new Date(message.received))}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
                 <button className={'icon '+(message.starred?'starred':'')} aria-label={message.starred?'Remove star':'Star message'} onClick={()=>void update([message.id],{starred:!message.starred})}><Star size={16} fill={message.starred?'currentColor':'none'}/></button>
               </div>)}
             {more&&<button className="load-more" onClick={()=>void action(async()=>{const rows=await api<Message[]>(searchPath(messages.at(-1)?.id));setMessages([...messages,...rows]);setMore(rows.length===100);})}>Load older messages</button>}
@@ -480,8 +502,7 @@ function App(){
               })}><Star size={16} fill={item.pinned?'currentColor':'none'}/></button>
               <button aria-expanded={ruleAddress===item.address} aria-controls={ruleAddress===item.address?'address-settings':undefined} onClick={()=>void action(async()=>{
                 if(ruleAddress===item.address){setRuleAddress('');return;}
-                setRuleHooks(await api('/inbox-rule-hooks'));
-                setRuleAddress(item.address);
+                await openAddressSettings(item.address);
               })}><Settings2 size={15}/> Settings</button>
               <button onClick={()=>mailbox('inbox','',item.address)}>Open inbox <ArrowUpRight size={14}/></button>
             </div>
@@ -578,12 +599,12 @@ function App(){
             <div className="dns-panel">
               <div className="dns-heading"><h3>DNS records</h3><button disabled={Boolean(busy)} onClick={()=>void action(()=>checkCloudflare(item.name))}>Check DNS</button></div>
               {busy&&<p role="status">{busy}</p>}
-              {check&&<><dl className="dns-data">
+              {check&&<><p role="status">{check.applied?(item.verified?'DNS verified. Send a test email.':'Waiting for DNS. Letterdock will retry automatically.'):check.message}</p>
+              <details className="dns-record-details"><summary>Show record values</summary><dl className="dns-data">
                 <dt>Nameservers</dt><dd>{check.detected&&<strong>Cloudflare · </strong>}{check.dns.nameservers.join(', ')||'None found'}</dd>
                 <dt>MX</dt><dd>{check.dns.mx.join(', ')||'No MX records found'}</dd>
                 <dt>Verification TXT</dt><dd>{check.dns.txtVerified?'Verified':'Pending'}</dd>
-              </dl>
-              <p role="status">{check.applied?(item.verified?'DNS verified. Send a test email.':'Waiting for DNS. Letterdock will retry automatically.'):check.message}</p></>}
+              </dl></details></>}
             </div>
             <div className="compact domain-actions">
               {item.verified&&<button onClick={()=>{setAddressDomain(item.name);setAddressQuery('');void navigate('Addresses');}}>Manage addresses <ArrowUpRight size={14}/></button>}
@@ -592,8 +613,7 @@ function App(){
                 if(!result.available||!result.url)throw Error(result.message||'Cloudflare authorization is unavailable.');
                 location.assign(result.url);
               })}>Authorize verification DNS <ArrowUpRight size={14}/></button>}
-              <button className="primary" disabled={Boolean(busy)||Boolean(check?.applied)} onClick={()=>void action(()=>setupDomainFromDashboard(item.name))}>Set up domain</button>
-              <button onClick={()=>void action(async()=>{await api('/domains/'+item.name,'POST');await refresh();},'DNS verified')}>Verify DNS</button>
+              {!item.verified&&<button className="primary" disabled={Boolean(busy)||Boolean(check?.applied)} onClick={()=>void action(()=>setupDomainFromDashboard(item.name))}>Set up domain</button>}
             </div>
             <DeliveryPanel domain={item}/>
             <details className="prune-settings">
@@ -609,9 +629,12 @@ function App(){
                 {item.prune_days!==null&&<button type="button" onClick={()=>void action(()=>savePrune(item.name,null),'Auto-prune turned off')}>Turn off</button>}
               </form>
             </details>
-            <details open={manualDomain===item.name||undefined}><summary>Manual setup and retention</summary>
+            <details open={manualDomain===item.name||undefined}><summary>Advanced settings</summary>
               <ol><li>Add TXT <code>_letterdock.{item.name}</code> with value <code>letterdock={item.token}</code>.</li><li>Configure an inbound route with your DNS and mail provider. This installation can verify Cloudflare Email Routing MX records.</li><li>Verify DNS, then send a test email.</li></ol>
-              {item.last_received&&<p>Last received {when(item.last_received)}</p>}
+              <div className="compact">
+                {item.verified&&<button disabled={Boolean(busy)} onClick={()=>void action(()=>setupDomainFromDashboard(item.name))}>Re-run setup</button>}
+                <button onClick={()=>void action(async()=>{await api('/domains/'+item.name,'POST');await refresh();},'DNS verified')}>Verify DNS</button>
+              </div>
               <form className="settings-form" onSubmit={e=>submit(e,data=>api('/domains/'+item.name,'POST',{retention:data.get('days')?Number(data.get('days')):null}))}><label>Move to Trash after (days)<input name="days" type="number" min="1" max="3650" defaultValue={item.retention_days??''} placeholder="Keep indefinitely"/></label><button>Save</button></form>
             </details>
           </section>;
@@ -619,7 +642,7 @@ function App(){
       </section>}
       {page==='Integrations'&&<section className="settings"><header className="settings-heading"><span className="section-icon"><Boxes size={21}/></span><h1>Integrations</h1></header>
         {credential&&<div className="secret"><strong>Copy this secret now</strong><code>{credential}</code><button onClick={()=>void action(()=>navigator.clipboard.writeText(credential),'Copied')}>Copy</button><button onClick={()=>setCredential('')}>Dismiss</button></div>}
-        <h2 id="api-key-heading">Read-only API keys</h2>
+        <section className="settings-panel"><h2 id="api-key-heading">Read-only API keys</h2>
         <form className="settings-form" aria-labelledby="api-key-heading" onSubmit={e=>submit(e,async data=>setCredential((await api<{secret:string}>('/keys','POST',{name:data.get('name'),domain:data.get('domain')})).secret))}>
           <label htmlFor="key-name">Key name<input id="key-name" name="name" required maxLength={120}/></label>
           <label htmlFor="key-domain">Domain<select id="key-domain" name="domain" required defaultValue="">
@@ -629,7 +652,7 @@ function App(){
           <button className="primary">Create key</button>
         </form>
         {integration?.keys.map(item=><div className="settings-row compact" key={item.id}><span><strong>{item.name}</strong><small>{item.domain??'Disabled · Create a domain-scoped key'}</small></span><button onClick={()=>{if(confirm('Revoke this API key?'))void action(async()=>{await api('/integrations/key/'+item.id,'DELETE');await refresh();});}}>Revoke</button></div>)}
-        <h2 id="webhook-heading">Webhooks</h2>
+        </section><section className="settings-panel"><h2 id="webhook-heading">Webhooks</h2>
         <form className="settings-form" aria-labelledby="webhook-heading" onSubmit={e=>submit(e,async data=>{
           const hook=await api<{secret:string}>('/hooks','POST',{
             url:data.get('url'),filter:webhookScope==='filter'?data.get('filter'):null,addressOnly:webhookScope==='selected'
@@ -647,18 +670,20 @@ function App(){
         </form>
         {webhookScope==='selected'&&<p id="webhook-scope-help" className="webhook-scope-help">Assign this webhook from the settings of each address.</p>}
         {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span>{item.url}</span><small>{item.address_only?'Selected addresses':item.filter||'All addresses'}</small><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
-        <h2>Delivery attempts</h2><button onClick={()=>void action(refresh)}>Refresh history</button>
+        </section><section className="settings-panel"><div className="dns-heading"><h2>Delivery attempts</h2><button onClick={()=>void action(refresh)}>Refresh history</button></div>
         {integration?.deliveries.length===0&&<p className="empty-state">No deliveries yet.</p>}
         {integration?.deliveries.map((item,index)=><div className="settings-row compact" key={item.id+index}><span>{item.url}</span><small>{when(item.attempted)} · {item.result}</small><button onClick={()=>void action(async()=>{await api('/replay/'+item.id,'POST');await refresh();},'Replay queued')}>Replay</button></div>)}
+        </section>
       </section>}
-      {page==='Health'&&<section className="settings"><header className="settings-heading"><span className="section-icon"><CircleGauge size={21}/></span><h1>Health</h1></header><button onClick={()=>void action(refresh)}>Refresh</button>
+      {page==='Health'&&<section className="settings"><header className="settings-heading health-heading"><span className="section-icon"><CircleGauge size={21}/></span><h1>Health</h1><button onClick={()=>void action(refresh)}>Refresh</button></header>
         {health&&<><dl className="stats"><div><dt>Free disk space</dt><dd>{(health.free/1024**3).toFixed(1)} GiB</dd></div><div><dt>Pending parsing</dt><dd>{health.queues.find(row=>row.state==='pending')?.count??0}</dd></div><div><dt>Failed webhooks</dt><dd>{health.deliveries.find(row=>row.status==='failed')?.count??0}</dd></div></dl>
         {health.queues.filter(row=>row.state!=='ready').map(row=><p key={row.state}>Oldest {row.state} message · {when(row.oldest)}</p>)}
-        <h2>Staging connection</h2>
+        <section className="settings-panel"><h2>Staging connection</h2>
         <p>{!health.staging.configured?'R2 configuration required':health.staging.error?'Staging error. Check application logs.':health.staging.moreWaiting?'Importing staged messages':'Connected'}{health.staging.lastChecked&&' · '+when(health.staging.lastChecked)}</p>
-        <h2>Recent ingest</h2>{health.ingest.length===0&&<p className="empty-state">No ingest activity yet.</p>}{health.ingest.map(item=><div className="settings-row compact" key={item.id}><span>{item.recipient}</span><small>{item.status} · {when(item.time)}</small></div>)}</>}
-        <h2>Blocked envelope senders</h2><form className="settings-form" onSubmit={e=>submit(e,data=>api('/blocks','POST',{sender:data.get('sender')}))}><label>Sender<input name="sender" type="email" placeholder="sender@example.com" required/></label><button className="primary">Block</button></form>
+        </section><section className="settings-panel"><h2>Recent ingest</h2>{health.ingest.length===0&&<p className="empty-state">No ingest activity yet.</p>}{health.ingest.map(item=><div className="settings-row compact" key={item.id}><span>{item.recipient}</span><small>{item.status} · {when(item.time)}</small></div>)}
+        </section></>}<section className="settings-panel"><h2>Blocked envelope senders</h2><form className="settings-form" onSubmit={e=>submit(e,data=>api('/blocks','POST',{sender:data.get('sender')}))}><label>Sender<input name="sender" type="email" placeholder="sender@example.com" required/></label><button className="primary">Block</button></form>
         {blocks.map(item=><div className="settings-row compact" key={item.sender}><span>{item.sender}</span><button onClick={()=>void action(async()=>{await api('/blocks','POST',{sender:item.sender,remove:true});await refresh();})}>Unblock</button></div>)}
+        </section>
       </section>}
     </main>
     {pruning&&<dialog className="remove-dialog" aria-labelledby="prune-title" aria-describedby="prune-description"

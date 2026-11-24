@@ -108,7 +108,7 @@ flowchart LR
    bucket and allow listing, reading, and deleting objects. Configure lifecycle
    expiry for the `mail/` prefix.
 4. Restart Letterdock, add the domain in the dashboard, publish its
-   verification TXT record, and choose **Verify DNS**. The built-in verifier
+   verification TXT record, and choose **Advanced settings → Verify DNS**. The built-in verifier
    expects Cloudflare Email Routing MX records.
 
 To let Letterdock configure a zone using an existing Worker, set
