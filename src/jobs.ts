@@ -47,7 +47,7 @@ export async function importMail(id: string, from: string, to: string, raw: Uint
       ), logged AS (
         INSERT INTO ingest_log(id,recipient,status,domain,bytes) SELECT $1,$4,status,$2,$6 FROM decision
         ON CONFLICT(id) DO UPDATE SET status=excluded.status,time=now()
-          WHERE ingest_log.status='storage_quota' RETURNING status
+          WHERE ingest_log.status IN ('storage_quota','domain_quota') RETURNING status
       ), stored AS (
         INSERT INTO messages(id,domain,sender,recipient,raw)
         SELECT $1,$2,$3,$4,$5 FROM logged WHERE status='stored' RETURNING recipient
@@ -61,7 +61,7 @@ export async function importMail(id: string, from: string, to: string, raw: Uint
     `, [id,domain,from,recipient,raw.byteLength<=maxMessageBytes?Buffer.from(raw):null,raw.byteLength,
       maxMessageBytes,dailyDomainBytes,maxDatabaseBytes,disk.bavail*disk.bsize,minFreeBytes]);
     await client.query('COMMIT');
-    return outcome?.status !== 'storage_quota';
+    return outcome?.status !== 'storage_quota' && outcome?.status !== 'domain_quota';
   } catch(error) {
     await client.query('ROLLBACK');
     throw error;
@@ -76,6 +76,12 @@ export const stagingStatus = {
 };
 let continuation: string | undefined;
 let workerCursor: string | null = null;
+
+async function waitingForVerification(recipient:string) {
+  const name=recipient.slice(recipient.lastIndexOf('@')+1).toLowerCase();
+  const {rows:[domain]}=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[name]);
+  return Boolean(domain&&!domain.verified&&!domain.removed_at);
+}
 
 async function pullManaged() {
   const ingress=await managedIngress();
@@ -101,9 +107,7 @@ async function pullManaged() {
       const from=item.headers.get('x-letterdock-from');
       if(!item.ok||!to||from===null)throw Error('Staging message could not be read');
       const recipient=decodeURIComponent(to);
-      const name=recipient.split('@').at(-1)?.toLowerCase();
-      const state=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[name]);
-      if(state.rows[0]&&!state.rows[0].verified&&!state.rows[0].removed_at){await item.body?.cancel();continue;}
+      if(await waitingForVerification(recipient)){await item.body?.cancel();continue;}
       if (!await importMail(key.slice(5),decodeURIComponent(from),recipient,new Uint8Array(await item.arrayBuffer()))) {
         stagingStatus.error=true;
         continue;
@@ -118,7 +122,7 @@ async function pull() {
   if (!s3 || !bucket) return pullManaged();
   const page = await s3.send(new ListObjectsV2Command({
     Bucket: bucket, Prefix: 'mail/', MaxKeys: 25, ContinuationToken: continuation
-  }));
+  }),{abortSignal:AbortSignal.timeout(20000)});
   stagingStatus.lastChecked = new Date().toISOString();
   stagingStatus.moreWaiting = Boolean(page.IsTruncated);
   stagingStatus.error = false;
@@ -126,13 +130,14 @@ async function pull() {
   for (const entry of page.Contents ?? []) {
     const key = entry.Key!;
     try {
-      const item = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      const item = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }),{abortSignal:AbortSignal.timeout(20000)});
       if (!item.Body || !item.Metadata?.to || item.Metadata.from === undefined) throw Error('Missing envelope');
+      if(await waitingForVerification(item.Metadata.to)){await item.Body.transformToWebStream().cancel();continue;}
       if (!await importMail(key.slice(5), item.Metadata.from, item.Metadata.to, await item.Body.transformToByteArray())) {
         stagingStatus.error=true;
         continue;
       }
-      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }),{abortSignal:AbortSignal.timeout(20000)});
     } catch (error) { stagingStatus.error = true; console.error('Import failed', key, error); }
   }
 }
@@ -191,20 +196,30 @@ for (const [address, bits] of [['0.0.0.0',8],['10.0.0.0',8],['100.64.0.0',10],['
 
 async function post(url: URL, headers: Record<string,string>, body: string) {
   if (url.protocol !== 'https:' || url.username || url.password) throw Error('Public HTTPS required');
-  const resolved = await lookup(url.hostname, { family: 4 });
-  if (restricted.check(resolved.address)) throw Error('Public IPv4 required');
-  return new Promise<number>((resolve, reject) => {
-    const req = request(url, {
-      method: 'POST', headers, family: 4,
-      lookup: (_name, _options, callback) => callback(null, resolved.address, 4)
-    }, response => { response.resume(); resolve(response.statusCode ?? 0); });
-    req.setTimeout(5000, () => req.destroy(Error('Timeout')));
-    req.on('error', reject);
-    req.end(body);
-  });
+  const controller=new AbortController();
+  const {signal}=controller;
+  const timer=setTimeout(()=>controller.abort(new Error('Webhook deadline exceeded')),10000);
+  try {
+    return await new Promise<number>((resolve,reject)=>{
+      signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
+      void lookup(url.hostname,{family:4}).then(resolved=>{
+        signal.throwIfAborted();
+        if(restricted.check(resolved.address))throw Error('Public IPv4 required');
+        const req=request(url,{
+          method:'POST',headers,family:4,signal,
+          lookup:(_name,_options,callback)=>callback(null,resolved.address,4)
+        },response=>{
+          response.destroy();
+          resolve(response.statusCode??0);
+        });
+        req.on('error',reject);
+        req.end(body);
+      }).catch(reject);
+    });
+  } finally {clearTimeout(timer);}
 }
 
-async function deliver() {
+export async function deliver() {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -264,16 +279,19 @@ async function applyRetention() {
     DELETE FROM messages m USING eligible WHERE m.id=eligible.id
   `);
   await db.query(`UPDATE messages m SET folder='trash',trashed_at=now() FROM domains d
-    WHERE m.domain=d.name AND d.retention_days IS NOT NULL AND m.folder<>'trash'
+    WHERE m.domain=d.name AND d.removed_at IS NULL AND d.retention_days IS NOT NULL
+    AND m.folder<>'trash' AND NOT m.retention_exempt
     AND m.received < now()-make_interval(days => d.retention_days)`);
 }
 
 export async function runJobs() {
   await Promise.allSettled([
-    pull().catch(error => { stagingStatus.error = true; continuation = undefined; throw error; }),
+    pull().catch(error => { stagingStatus.error = true; continuation = undefined; workerCursor = null; throw error; }),
     (async () => { for (let n=0; n<25 && await parseNext(); n++) { /* drain bounded batch */ } })(),
-    deliver(),
     db.query("DELETE FROM ingest_log WHERE time < now()-interval '30 days' AND status <> 'stored'"),
+    db.query(`DELETE FROM deliveries WHERE id IN (
+      SELECT id FROM deliveries WHERE message_removed_at<now()-interval '30 days' LIMIT 100
+    )`),
     applyRetention()
   ]).then(results => results.forEach(result => {
     if (result.status === 'rejected') console.error('Background job failed', result.reason);

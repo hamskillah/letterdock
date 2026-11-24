@@ -9,9 +9,9 @@ import { completeOAuth, startOAuth, type OAuthState } from './cloudflare-oauth.j
 import { domainConnectLink } from './domain-connect.js';
 import { connectCloudflare, connectionStatus, encryptSecret, domainSetup, SetupConflict } from './cloudflare.js';
 import { db, migrate } from './db.js';
-import { runJobs, stagingStatus } from './jobs.js';
+import { deliver, runJobs, stagingStatus } from './jobs.js';
 
-const app = Fastify({ logger: true, disableRequestLogging: true, routerOptions: { maxParamLength: 160 } });
+const app = Fastify({ logger: true, disableRequestLogging: true, routerOptions: { maxParamLength: 253 } });
 const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 const listenPort = Number(process.env.PORT || 3000);
@@ -100,6 +100,7 @@ app.patch<{Body:{ids:string[],folder?:string,unread?:boolean,starred?:boolean,la
   await db.query(`UPDATE messages SET folder=coalesce($2,folder), unread=coalesce($3,unread),
     trashed_at=CASE WHEN $2 IS NULL THEN trashed_at
       WHEN $2='trash' THEN coalesce(trashed_at,now()) ELSE NULL END,
+    retention_exempt=CASE WHEN $2 IN ('inbox','archive') AND folder='trash' THEN true ELSE retention_exempt END,
     starred=coalesce($4,starred), labels=CASE WHEN $5::text IS NOT NULL AND NOT ($5=ANY(labels)) THEN labels||ARRAY[$5]
     WHEN $6::text IS NOT NULL THEN array_remove(labels,$6) ELSE labels END,
     state=CASE WHEN $7 AND state='failed' THEN 'pending' ELSE state END WHERE id=ANY($1::uuid[])`,
@@ -344,7 +345,7 @@ app.post<{Body:{sender:string,remove?:boolean}}>('/api/blocks',async(req,res)=>{
 app.get('/api/integrations',async()=>({
   keys:(await db.query('SELECT id,name,domain FROM api_keys ORDER BY name')).rows,
   hooks:(await db.query('SELECT id,url,filter,address_only FROM hooks ORDER BY url')).rows,
-  deliveries:(await db.query(`SELECT d.id,d.status,d.attempts,h.url,l.result,l.attempted FROM delivery_log l
+  deliveries:(await db.query(`SELECT d.id,d.status,d.attempts,d.message IS NOT NULL AS replayable,h.url,l.result,l.attempted FROM delivery_log l
     JOIN deliveries d ON d.id=l.delivery JOIN hooks h ON h.id=d.hook ORDER BY l.id DESC LIMIT 100`)).rows
 }));
 app.post<{Body:{name:string;domain:string}}>('/api/keys',async (req,res)=>{
@@ -375,7 +376,8 @@ app.delete<{Params:{type:string,id:string}}>('/api/integrations/:type/:id',async
 });
 app.post<{Params:{id:string}}>('/api/replay/:id',async(req,res)=>{
   if(!uuid.test(req.params.id)) return res.code(404).send();
-  await db.query("UPDATE deliveries SET status='pending',next_attempt=now(),attempts=0 WHERE id=$1",[req.params.id]);
+  const result=await db.query("UPDATE deliveries SET status='pending',next_attempt=now(),attempts=0 WHERE id=$1 AND message IS NOT NULL",[req.params.id]);
+  if(!result.rowCount)return res.code(404).send({message:'Delivery or original message is no longer available.'});
   return {ok:true};
 });
 app.get('/api/health',async()=>{
@@ -384,6 +386,8 @@ app.get('/api/health',async()=>{
   return {
     free:disk.bavail*disk.bsize,
     staging:stagingStatus,
+    deferred:(await db.query(`SELECT status,count(*)::int AS count FROM ingest_log
+      WHERE status IN ('domain_quota','storage_quota') AND time>=now()-interval '7 days' GROUP BY status`)).rows,
     queues:(await db.query('SELECT state,count(*)::int AS count,min(received) AS oldest FROM messages GROUP BY state')).rows,
     ingest:(await db.query('SELECT * FROM ingest_log ORDER BY time DESC LIMIT 50')).rows,
     deliveries:(await db.query('SELECT status,count(*)::int AS count FROM deliveries GROUP BY status')).rows
@@ -397,7 +401,7 @@ function pagination(q:Record<string,string>) {
 }
 const visible = `m.state='ready' AND m.folder<>'trash' AND EXISTS (
   SELECT 1 FROM domains d WHERE d.name=m.domain
-  AND (d.retention_days IS NULL OR m.received >= now()-make_interval(days => d.retention_days))
+  AND (m.retention_exempt OR d.retention_days IS NULL OR m.received >= now()-make_interval(days => d.retention_days))
 )`;
 const notFound = (message:string) => ({name:'not_found',statusCode:404,message});
 app.get<{Querystring:Record<string,string>}>('/emails/receiving',async req=>{
@@ -471,3 +475,9 @@ async function tick() {
   setTimeout(tick, 3000);
 }
 void tick();
+async function webhookTick() {
+  try {await deliver();}
+  catch(error){console.error('Webhook delivery failed',error);}
+  finally {setTimeout(webhookTick,3000);}
+}
+void webhookTick();

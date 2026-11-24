@@ -6,7 +6,7 @@ import { Resend } from 'resend';
 import { signedApplyUrl } from '../src/domain-connect.js';
 import { cloudflareToken, connectCloudflare, decryptSecret } from '../src/cloudflare.js';
 import { db, migrate } from '../src/db.js';
-import { importMail, parseNext } from '../src/jobs.js';
+import { importMail, parseNext, runJobs } from '../src/jobs.js';
 
 const origin='http://localhost:56314';
 const password='integration-secret-password';
@@ -147,16 +147,48 @@ try {
     await db.query('DELETE FROM messages WHERE id IN ($1,$2,$3)',[oldMail,freshMail,unrelatedMail]);
     await db.query('DELETE FROM domains WHERE name=$1',[pruneDomain]);
   }
-  const expiredTrash=randomUUID(), existingTrash=randomUUID(), retentionMail=randomUUID();
+  const longDomain=['a'.repeat(63),'b'.repeat(63),'c'.repeat(63),'d'.repeat(61)].join('.');
+  assert.equal(longDomain.length,253);
+  try {
+    assert.equal((await fetch(origin+'/api/domains',{method:'POST',headers,body:JSON.stringify({name:longDomain})})).status,200);
+    assert.equal((await fetch(origin+'/api/domains/'+longDomain+'/delivery-health',{headers})).status,200);
+    assert.equal((await fetch(origin+'/api/domains/'+longDomain,{method:'DELETE',headers:{cookie,origin}})).status,200);
+  } finally {await db.query('DELETE FROM domains WHERE name=$1',[longDomain]);}
+
+  const quotaDomain='quota-'+id+'.integration.example';
+  const quotaMail=randomUUID(), consumedQuota=randomUUID(), quotaAddress='billing@'+quotaDomain;
+  await db.query('INSERT INTO domains(name,verified) VALUES($1,true)',[quotaDomain]);
+  try {
+    await db.query("INSERT INTO ingest_log(id,recipient,domain,status,bytes) VALUES($1,$2,$3,'stored',$4)",
+      [consumedQuota,quotaAddress,quotaDomain,Number(process.env.INBOUND_DOMAIN_DAILY_BYTES??512*1024**2)]);
+    assert.equal(await importMail(quotaMail,'sender@example.net',quotaAddress,raw),false);
+    assert.equal((await db.query('SELECT status FROM ingest_log WHERE id=$1',[quotaMail])).rows[0].status,'domain_quota');
+    assert.equal((await db.query('SELECT 1 FROM messages WHERE id=$1',[quotaMail])).rowCount,0);
+    const health=await fetch(origin+'/api/health',{headers}).then(response=>response.json());
+    assert(health.deferred.some((entry:{status:string;count:number})=>entry.status==='domain_quota'&&entry.count>0));
+    await db.query("UPDATE ingest_log SET time=now()-interval '25 hours' WHERE id=$1",[consumedQuota]);
+    assert.equal(await importMail(quotaMail,'sender@example.net',quotaAddress,raw),true);
+    assert.equal((await db.query('SELECT status FROM ingest_log WHERE id=$1',[quotaMail])).rows[0].status,'stored');
+    assert.equal((await db.query('SELECT 1 FROM messages WHERE id=$1',[quotaMail])).rowCount,1);
+  } finally {
+    await db.query('DELETE FROM messages WHERE domain=$1',[quotaDomain]);
+    await db.query('DELETE FROM ingest_log WHERE domain=$1',[quotaDomain]);
+    await db.query('DELETE FROM inboxes WHERE address=$1',[quotaAddress]);
+    await db.query('DELETE FROM domains WHERE name=$1',[quotaDomain]);
+  }
+
+  const expiredTrash=randomUUID(), existingTrash=randomUUID(), retentionMail=randomUUID(), cancelledDelivery=randomUUID();
   const trashDomain='trash-'+id+'.integration.example';
   await db.query('INSERT INTO domains(name,verified,retention_days) VALUES($1,true,7)',[trashDomain]);
   try {
     await db.query(`INSERT INTO messages(id,domain,recipient,sender,raw,received,folder,state,trashed_at) VALUES
-      ($1,$4,'expired@'||$4,'sender@example.net',$5,now()-interval '60 days','trash','ready',now()-interval '31 days'),
+      ($1,$4,'expired@'||$4,'sender@example.net',$5,now()-interval '60 days','trash','ready',now()),
       ($2,$4,'legacy@'||$4,'sender@example.net',$5,now()-interval '60 days','trash','ready',NULL),
       ($3,$4,'retention@'||$4,'sender@example.net',$5,now()-interval '60 days','inbox','ready',NULL)`,
       [expiredTrash,existingTrash,retentionMail,trashDomain,raw]);
     await db.query("INSERT INTO attachments(message,filename,mime,data) VALUES($1,'fixture.txt','text/plain',$2)",[expiredTrash,raw]);
+    await db.query("INSERT INTO deliveries(id,hook,message,next_attempt) VALUES($1,$2,$3,now()+interval '1 day')",[cancelledDelivery,legacyHookId,expiredTrash]);
+    await db.query("UPDATE messages SET trashed_at=now()-interval '31 days' WHERE id=$1",[expiredTrash]);
     await migrate();
     for(let attempt=0;attempt<70;attempt++){
       const progress=await db.query("SELECT id FROM messages WHERE id=$1 OR (id=$2 AND folder<>'trash')",[expiredTrash,retentionMail]);
@@ -167,6 +199,16 @@ try {
     assert.equal((await db.query('SELECT 1 FROM attachments WHERE message=$1',[expiredTrash])).rowCount,0);
     assert.equal((await db.query(`SELECT id FROM messages WHERE id=ANY($1::uuid[]) AND folder='trash'
       AND trashed_at>now()-interval '1 hour'`,[[existingTrash,retentionMail]])).rowCount,2);
+    const integration=await fetch(origin+'/api/integrations',{headers}).then(response=>response.json());
+    const cancelled=integration.deliveries.find((delivery:{id:string})=>delivery.id===cancelledDelivery);
+    assert.equal(cancelled?.status,'cancelled');
+    assert.equal(cancelled?.replayable,false);
+    assert.equal((await fetch(origin+'/api/replay/'+cancelledDelivery,{method:'POST',headers:{cookie,origin}})).status,404);
+    const restore=await fetch(origin+'/api/messages',{method:'PATCH',headers,body:JSON.stringify({ids:[retentionMail],folder:'inbox'})});
+    assert.equal(restore.status,200);
+    await runJobs();
+    assert.deepEqual((await db.query('SELECT folder,trashed_at,retention_exempt FROM messages WHERE id=$1',[retentionMail])).rows[0],
+      {folder:'inbox',trashed_at:null,retention_exempt:true});
   } finally {
     await db.query('DELETE FROM messages WHERE domain=$1',[trashDomain]);
     await db.query('DELETE FROM domains WHERE name=$1',[trashDomain]);
@@ -174,6 +216,40 @@ try {
   const bulkSubject='bulkfixture'+id.replaceAll('-','');
   const browser=await chromium.launch();
   try {
+    const polling=await browser.newPage();
+    await polling.clock.install();
+    let requests=0;
+    let releasePoll!:()=>void;
+    const held=new Promise<void>(resolve=>{releasePoll=resolve;});
+    let pollStarted!:()=>void;
+    const started=new Promise<void>(resolve=>{pollStarted=resolve;});
+    let pollFinished!:()=>void;
+    const finished=new Promise<void>(resolve=>{pollFinished=resolve;});
+    await polling.route('**/api/messages?*',async route=>{
+      const query=new URL(route.request().url()).searchParams;
+      if(!query.get('q')&&++requests===2){
+        pollStarted();
+        await held;
+        try {await route.fulfill({json:[{id,received:new Date().toISOString(),subject:'Stale polling response',sender:'old@example.net',recipient}]});}
+        catch {/* the obsolete request was aborted */}
+        finally {pollFinished();}
+      }else await route.continue();
+    });
+    try {
+      await polling.goto(origin);
+      await polling.getByLabel('Admin password').fill(password);
+      await polling.getByRole('button',{name:'Sign in'}).click();
+      await polling.getByRole('button',{name:/Invoice 42/}).first().waitFor();
+      await polling.clock.fastForward(10010);
+      await started;
+      await polling.getByRole('textbox',{name:'Search messages'}).fill('noresult'+id.replaceAll('-',''));
+      await polling.clock.runFor(250);
+      await polling.getByText('No matching messages',{exact:true}).waitFor();
+      releasePoll();
+      await finished;
+      await polling.clock.runFor(200);
+      assert.equal(await polling.getByText('Stale polling response',{exact:true}).count(),0);
+    } finally {releasePoll();await polling.close();}
     for(const size of [{width:1440,height:900},{width:1024,height:800},{width:768,height:850},{width:390,height:844}]){
       if(size.width===390)await db.query('UPDATE messages SET unread=true WHERE id=$1',[id]);
       const page=await browser.newPage({viewport:size,hasTouch:size.width===390});
@@ -408,7 +484,7 @@ try {
   }
   assert.equal((await sdk.emails.receiving.get(id)).data?.id,id);
   await db.query("UPDATE domains SET retention_days=1 WHERE name=$1",[domain]);
-  await db.query("UPDATE messages SET received=now()-interval '2 days' WHERE id=$1",[id]);
+  await db.query("UPDATE messages SET received=now()-interval '2 days',retention_exempt=false WHERE id=$1",[id]);
   try {
     assert.equal((await sdk.emails.receiving.get(id)).data,null);
     assert.equal((await fetch(attachment.data.download_url)).status,404);

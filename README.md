@@ -129,7 +129,9 @@ processing errors and quota failures.
 - **API keys** are scoped to one verified domain and exclude Trash and expired
   messages. Handle keys and temporary attachment URLs as credentials.
 - **Webhooks** send signed `email.received` events to HTTPS endpoints.
-  **Integrations** shows delivery attempts and provides replay.
+  **Integrations** shows delivery attempts and provides replay. Permanently
+  deleting a message cancels pending retries, while recent delivery history
+  remains available for 30 days.
 - **Address rules** can add a label and queue a webhook for new mail at an
   exact recipient address. Create a webhook with **Selected addresses**
   in **Integrations**, then assign it under **Addresses → Settings**. Webhooks
@@ -138,6 +140,8 @@ processing errors and quota failures.
   3650 days and confirm to permanently delete older email and attachments
   across that domain's folders. PostgreSQL can reuse deleted rows' space
   through autovacuum. The separate retention setting moves mail to Trash.
+  Restoring a message exempts it from that move rule. Domain Auto-prune still
+  applies if enabled.
 - **Trash** automatically deletes messages and attachments after 30 days in
   Trash. Existing Trash messages get 30 days from the upgrade. A domain's
   shorter Auto-prune policy may delete them sooner.
@@ -147,7 +151,7 @@ processing errors and quota failures.
 | Default | Behavior |
 | --- | --- |
 | 20 MiB per message | The Worker rejects larger messages. |
-| 512 MiB per domain per rolling 24 hours | Excess mail is discarded during import and logged as `domain_quota` in Health. Cloudflare may already have accepted the message, so this does not send a bounce. |
+| 512 MiB per domain per rolling 24 hours | Excess mail stays in staging and is retried when the rolling window allows it. Health shows recent messages deferred for quota. Managed staging expires after seven days. |
 | 10 GiB estimated database usage or 1 GiB free disk | Import pauses when the next message would cross either threshold. Managed staging expires unimported mail after seven days. |
 
 Tune the byte limits in [.env.example](.env.example). If PostgreSQL lives on

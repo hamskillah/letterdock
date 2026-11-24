@@ -10,12 +10,12 @@ type Domain = {name:string;token:string;verified:boolean;last_received:string|nu
 type CloudflareConnection = {canProvision:boolean;oauthConnected:boolean;configured:boolean;fromEnvironment:boolean;workerConfigured:boolean;stagingConfigured:boolean};
 type CloudflareStatus = {detected:boolean;ready:boolean;message:string;applied?:boolean;dns:{nameservers:string[];mx:string[];txtVerified:boolean}};
 type Address = {address:string;name:string;pinned:boolean;unread:number;auto_label:string|null;webhook_id:string|null;removed_at:string|null};
-type Integration = {keys:{id:string;name:string;domain:string|null}[];hooks:{id:string;url:string;filter:string;address_only:boolean}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string}[]};
-type Health = {free:number;staging:{configured:boolean;lastChecked:string|null;moreWaiting:boolean;error:boolean};queues:{state:string;count:number;oldest:string}[];ingest:{id:string;recipient:string;status:string;time:string}[];deliveries:{status:string;count:number}[]};
+type Integration = {keys:{id:string;name:string;domain:string|null}[];hooks:{id:string;url:string;filter:string;address_only:boolean}[];deliveries:{id:string;url:string;status:string;result:string;attempted:string;replayable:boolean}[]};
+type Health = {free:number;deferred:{status:string;count:number}[];staging:{configured:boolean;lastChecked:string|null;moreWaiting:boolean;error:boolean};queues:{state:string;count:number;oldest:string}[];ingest:{id:string;recipient:string;status:string;time:string}[];deliveries:{status:string;count:number}[]};
 
 class AccessError extends Error {}
-async function api<T>(path:string, method='GET', data?:unknown): Promise<T> {
-  const response=await fetch('/api'+path,{method,headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});
+async function api<T>(path:string, method='GET', data?:unknown, options?:{signal:AbortSignal;priority?:RequestPriority}): Promise<T> {
+  const response=await fetch('/api'+path,{...options,method,headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});
   const result=await response.json().catch(()=>null);
   if(response.status===401) throw new AccessError(result?.message ?? 'Sign in required');
   if(!response.ok) throw Error(result?.message ?? 'Request failed. Try again.');
@@ -46,7 +46,7 @@ const inboundStatus:Record<string,string> = {
   ready:'In inbox', pending:'Queued for processing', failed:'MIME processing failed',
   stored:'Previously stored', unknown_domain:'Domain was inactive or unverified',
   blocked:'Sender blocked', message_too_large:'Message exceeds 20 MB',
-  domain_quota:'Daily domain quota exceeded', storage_quota:'Storage limit reached. Check Health.'
+  domain_quota:'Deferred: daily domain quota', storage_quota:'Deferred: storage limit'
 };
 
 function DeliveryPanel({domain}:{domain:Domain}){
@@ -274,14 +274,22 @@ function App(){
   },[authorized,page,folder,domain,address,query,filters,starOnly,unreadOnly]);
   useEffect(()=>{
     if(!authorized||page!=='Inbox')return;
-    const timer=setInterval(()=>{
-      if(document.hidden)return;
-      if(page==='Inbox'&&!selected.length)api<Message[]>(searchPath()).then(rows=>{
-        setMessages(current=>current.length>100?current:rows);
-        setMore(current=>messages.length>100?current:rows.length===100);
-      }).catch(fail);
+    if(selected.length||messages.length>100)return;
+    const controller=new AbortController();
+    const {signal}=controller;
+    let pending=false;
+    const timer=setInterval(async()=>{
+      if(document.hidden||pending)return;
+      pending=true;
+      try{
+        const rows=await api<Message[]>(searchPath(),'GET',undefined,{signal,priority:'low'});
+        if(signal.aborted)return;
+        setMessages(rows);
+        setMore(rows.length===100);
+      }catch(cause){if(!signal.aborted)fail(cause);}
+      finally{pending=false;}
     },10000);
-    return ()=>clearInterval(timer);
+    return ()=>{controller.abort();clearInterval(timer);};
   },[authorized,page,folder,domain,address,query,filters,starOnly,unreadOnly,selected.length,messages.length]);
 
   useEffect(()=>{
@@ -774,7 +782,7 @@ function App(){
         {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span className="integration-item"><code className="integration-endpoint">{item.url}</code><small>{item.address_only?'Selected addresses':item.filter||'All addresses'}</small></span><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
         </section><section className="settings-panel"><div className="dns-heading"><h2>Delivery attempts</h2><button onClick={()=>void action(refresh)}>Refresh history</button></div>
         {integration?.deliveries.length===0&&<p className="empty-state">No deliveries yet.</p>}
-        {integration?.deliveries.map((item,index)=><div className="settings-row compact" key={item.id+index}><span className="integration-item"><code className="integration-endpoint">{item.url}</code><small>{when(item.attempted)} · {item.result}</small></span><button onClick={()=>void action(async()=>{await api('/replay/'+item.id,'POST');await refresh();},'Replay queued')}>Replay</button></div>)}
+        {integration?.deliveries.map((item,index)=><div className="settings-row compact" key={item.id+index}><span className="integration-item"><code className="integration-endpoint">{item.url}</code><small>{when(item.attempted)} · {item.result}</small></span>{item.replayable?<button onClick={()=>void action(async()=>{await api('/replay/'+item.id,'POST');await refresh();},'Replay queued')}>Replay</button>:<small>Original message deleted</small>}</div>)}
         </section>
       </section>}
       {page==='Health'&&<section className="settings"><header className="settings-heading health-heading"><span className="section-icon"><CircleGauge size={21}/></span><h1>Health</h1><button onClick={()=>void action(refresh)}>Refresh</button></header>
@@ -782,6 +790,7 @@ function App(){
         {health.queues.filter(row=>row.state!=='ready').map(row=><p key={row.state}>Oldest {row.state} message · {when(row.oldest)}</p>)}
         <section className="settings-panel"><h2>Staging connection</h2>
         <p>{!health.staging.configured?'R2 configuration required':health.staging.error?'Staging error. Check application logs.':health.staging.moreWaiting?'Importing staged messages':'Connected'}{health.staging.lastChecked&&' · '+when(health.staging.lastChecked)}</p>
+        {health.deferred.length>0&&<ul className="delivery-activity">{health.deferred.map(item=><li key={item.status}>{item.count} · {inboundStatus[item.status]}</li>)}</ul>}
         </section></>}
         <section className="settings-panel"><h2>Blocked envelope senders</h2><form className="settings-form" onSubmit={e=>submit(e,data=>api('/blocks','POST',{sender:data.get('sender')}))}><label>Sender<input name="sender" type="email" placeholder="sender@example.com" required/></label><button className="primary">Block</button></form>
         {blocks.map(item=><div className="settings-row compact" key={item.sender}><span>{item.sender}</span><button onClick={()=>void action(async()=>{await api('/blocks','POST',{sender:item.sender,remove:true});await refresh();})}>Unblock</button></div>)}

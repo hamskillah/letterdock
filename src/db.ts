@@ -24,6 +24,7 @@ export async function migrate() {
       labels text[] NOT NULL DEFAULT '{}'
     );
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS trashed_at timestamptz;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS retention_exempt boolean NOT NULL DEFAULT false;
     UPDATE messages SET trashed_at=now() WHERE folder='trash' AND trashed_at IS NULL;
     CREATE INDEX IF NOT EXISTS messages_trash_age ON messages(trashed_at,id) WHERE folder='trash';
     CREATE INDEX IF NOT EXISTS messages_received ON messages(received DESC, id DESC);
@@ -57,7 +58,7 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS inboxes_webhook ON inboxes(webhook_id) WHERE webhook_id IS NOT NULL;
     CREATE TABLE IF NOT EXISTS deliveries (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), hook uuid NOT NULL REFERENCES hooks(id) ON DELETE CASCADE,
-      message uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE, attempts integer NOT NULL DEFAULT 0,
+      message uuid REFERENCES messages(id) ON DELETE SET NULL, attempts integer NOT NULL DEFAULT 0,
       next_attempt timestamptz NOT NULL DEFAULT now(), status text NOT NULL DEFAULT 'pending',
       UNIQUE(hook, message)
     );
@@ -66,6 +67,36 @@ export async function migrate() {
       delivery uuid REFERENCES deliveries(id) ON DELETE CASCADE, result text NOT NULL,
       attempted timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE deliveries ADD COLUMN IF NOT EXISTS message_removed_at timestamptz;
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='deliveries'::regclass
+                 AND conname='deliveries_message_fkey' AND confdeltype<>'n') THEN
+        ALTER TABLE deliveries ALTER COLUMN message DROP NOT NULL;
+        ALTER TABLE deliveries DROP CONSTRAINT deliveries_message_fkey;
+        ALTER TABLE deliveries ADD CONSTRAINT deliveries_message_fkey
+          FOREIGN KEY (message) REFERENCES messages(id) ON DELETE SET NULL;
+      END IF;
+    END;
+    $migration$;
+    CREATE INDEX IF NOT EXISTS deliveries_message ON deliveries(message) WHERE message IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS deliveries_message_removed ON deliveries(message_removed_at) WHERE message_removed_at IS NOT NULL;
+    CREATE OR REPLACE FUNCTION mark_purged_message_deliveries() RETURNS trigger LANGUAGE plpgsql AS $body$
+    BEGIN
+      WITH cancelled AS (
+        UPDATE deliveries SET status='cancelled',message_removed_at=now()
+        WHERE message=OLD.id AND status='pending' RETURNING id
+      )
+      INSERT INTO delivery_log(delivery,result)
+        SELECT id,'Cancelled: message permanently deleted before delivery' FROM cancelled;
+      UPDATE deliveries SET message_removed_at=now()
+      WHERE message=OLD.id AND message_removed_at IS NULL;
+      RETURN OLD;
+    END;
+    $body$;
+    DROP TRIGGER IF EXISTS mark_purged_message_deliveries ON messages;
+    CREATE TRIGGER mark_purged_message_deliveries BEFORE DELETE ON messages
+      FOR EACH ROW EXECUTE FUNCTION mark_purged_message_deliveries();
     CREATE TABLE IF NOT EXISTS ingest_log (
       id uuid PRIMARY KEY, recipient text NOT NULL, status text NOT NULL, time timestamptz NOT NULL DEFAULT now()
     );
