@@ -178,6 +178,25 @@ try {
       await page.getByRole('heading',{name:'Domains',exact:true}).waitFor();
       await page.getByRole('heading',{name:'DNS records'}).first().waitFor();
       const card=page.getByRole('heading',{name:domain,exact:true}).locator('xpath=ancestor::section[1]');
+      if(size.width===1440){
+        await card.getByRole('button',{name:/Start (delivery|new) test/}).click();
+        await card.getByText('Waiting for test email',{exact:true}).waitFor();
+        const path=origin+'/api/domains/'+domain+'/delivery-health';
+        assert.equal((await fetch(path)).status,401);
+        const pending=await fetch(path,{headers}).then(response=>response.json());
+        assert.equal(pending.delivery_verified_at,null);
+        assert.match(pending.delivery_test_address,/^ld-[a-f0-9]{16}@/);
+        const testId=randomUUID();
+        await importMail(testId,'sender@example.net',pending.delivery_test_address,raw);
+        await parseNext();
+        await card.getByText(/^Test email verified/).waitFor({timeout:12000});
+        const confirmed=await fetch(path,{headers}).then(response=>response.json());
+        assert(confirmed.delivery_verified_at);
+        assert.equal(confirmed.activity.find((event:{id:string})=>event.id===testId)?.status,'ready');
+        await card.getByText('Recent delivery activity',{exact:true}).click();
+        await card.getByText('In inbox',{exact:true}).first().waitFor();
+      }
+
       await card.getByRole('button',{name:'Set up domain'}).click();
       await card.getByText(/uses another DNS provider/).waitFor();
       await card.locator('details[open]').waitFor();
@@ -225,6 +244,10 @@ try {
   assert.equal(readded.status,200);
   const restored=await db.query('SELECT verified,removed_at FROM domains WHERE name=$1',[domain]);
   assert.deepEqual(restored.rows[0],{verified:false,removed_at:null});
+  const resetHealth=await fetch(origin+'/api/domains/'+domain+'/delivery-health',{headers}).then(response=>response.json());
+  assert.equal(resetHealth.delivery_test_address,null);
+  assert.equal(resetHealth.delivery_verified_at,null);
+  console.log('Passed: delivery test, parsed receipt, activity, and reset on removal');
   const testToken='cloudflare_test_token_123456789';
   const originalFetch=globalThis.fetch;
   globalThis.fetch=async (input,options)=>{

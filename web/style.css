@@ -114,6 +114,12 @@ dialog img{display:block;max-width:80vw;max-height:75vh;margin-top:.5rem}
 .dns-data dt{color:var(--muted)}
 .dns-data dd{margin:0}
 .dns-panel p,.domain-card details{font-size:.84rem}
+.delivery-panel{display:grid;gap:.5rem}
+.delivery-panel>button{justify-self:start}
+.delivery-panel .compact{align-items:center;flex-wrap:wrap}
+.delivery-activity{margin:.45rem 0 0;padding-left:1.2rem}
+.delivery-activity li+li{margin-top:.45rem}
+.delivery-activity span{display:block;color:var(--muted)}
 .domain-card summary{cursor:pointer;width:fit-content;color:var(--muted)}
 .domain-card details[open] summary{margin-bottom:.45rem}
 button:disabled{cursor:default;opacity:.55}

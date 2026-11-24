@@ -154,6 +154,10 @@ export async function parseNext() {
       await client.query('INSERT INTO attachments(message,filename,mime,data) VALUES($1,$2,$3,$4)',
         [id, attachment.filename ?? 'attachment', attachment.contentType, attachment.content]);
     }
+    await client.query(`UPDATE domains d SET delivery_verified_at=m.received
+      FROM messages m WHERE m.id=$1 AND d.name=m.domain AND d.removed_at IS NULL
+      AND d.verified AND d.delivery_test_address=m.recipient AND d.delivery_verified_at IS NULL
+      AND m.received BETWEEN d.delivery_test_expires - interval '30 minutes' AND d.delivery_test_expires`, [id]);
     await client.query(`INSERT INTO deliveries(hook,message)
       SELECT h.id,m.id FROM hooks h JOIN messages m ON m.id=$1
       WHERE h.filter='' OR h.filter=m.domain OR h.filter=m.recipient ON CONFLICT DO NOTHING`, [id]);

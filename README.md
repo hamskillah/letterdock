@@ -117,6 +117,13 @@ with Zone Read, DNS Edit, Zone Settings Edit, and Email Routing Rules Edit.
 
 </details>
 
+To confirm mail actually reaches your inbox, open **Domains → Delivery health →
+Start delivery test**. Send a message from an external mailbox to the generated
+address within 30 minutes. The domain's catch-all rule must route it to
+Letterdock. After the message is processed, the panel shows **Test email verified**.
+**Recent delivery activity** shows messages seen by this instance, including
+processing errors and quota failures.
+
 ## Integrations and retention
 
 - **API keys** are scoped to one verified domain and exclude Trash and expired

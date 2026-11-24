@@ -187,7 +187,7 @@ app.delete('/api/cloudflare', async (_req,res) => {
   await db.query("DELETE FROM settings WHERE key IN ('cloudflare_token','cloudflare_oauth')");
   return connectionStatus();
 });
-app.get('/api/domains',async()=> (await db.query('SELECT name,token,verified,last_received,retention_days,prune_days FROM domains WHERE removed_at IS NULL ORDER BY name')).rows);
+app.get('/api/domains',async()=> (await db.query('SELECT name,token,verified,last_received,retention_days,prune_days,delivery_test_address,delivery_test_expires,delivery_verified_at,delivery_test_expires<=now() AS test_expired FROM domains WHERE removed_at IS NULL ORDER BY name')).rows);
 app.post<{Body:{name:string}}>('/api/domains',async(req,res)=>{
   const name=domainToASCII(String(req.body?.name??'').trim().toLowerCase());
   if(!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/.test(name)||name.length>253) return res.code(400).send({message:'Enter a valid domain'});
@@ -211,6 +211,28 @@ app.post<{Params:{name:string},Body:{retention?:number|null}}>('/api/domains/:na
   await db.query('UPDATE domains SET verified=true WHERE name=$1',[name]);
   return {ok:true};
 });
+app.get<{Params:{name:string}}>('/api/domains/:name/delivery-health',async(req,res)=>{
+  const name=req.params.name;
+  const {rows:[domain]}=await db.query(`SELECT verified,last_received,delivery_test_address,
+    delivery_test_expires,delivery_verified_at,delivery_test_expires<=now() AS test_expired
+    FROM domains WHERE name=$1 AND removed_at IS NULL`,[name]);
+  if(!domain)return res.code(404).send({message:'Domain not found'});
+  const {rows:activity}=await db.query(`SELECT l.id,l.recipient,l.time,
+    CASE WHEN l.status='stored' THEN coalesce(m.state,'stored') ELSE l.status END AS status
+    FROM ingest_log l LEFT JOIN messages m ON m.id=l.id
+    WHERE l.domain=$1 ORDER BY l.time DESC,l.id DESC LIMIT 12`,[name]);
+  return {...domain,activity,staging_error:stagingStatus.error};
+});
+app.post<{Params:{name:string}}>('/api/domains/:name/delivery-health',async(req,res)=>{
+  const name=req.params.name;
+  const address='ld-'+randomBytes(8).toString('hex')+'@'+name;
+  if(address.length>254)return res.code(422).send({message:'This domain is too long for a generated test address.'});
+  const result=await db.query(`UPDATE domains SET delivery_test_address=$2,
+    delivery_test_expires=now()+interval '30 minutes',delivery_verified_at=NULL
+    WHERE name=$1 AND verified AND removed_at IS NULL`,[name,address]);
+  if(!result.rowCount)return res.code(422).send({message:'Verify DNS before starting a delivery test.'});
+  return res.code(201).send({address});
+});
 app.patch<{Params:{name:string},Body:{days:number|null}}>('/api/domains/:name/auto-prune',async(req,res)=>{
   const days=req.body?.days;
   if(days!==null && (typeof days!=='number'||!Number.isInteger(days)||days<1||days>3650)) {
@@ -223,7 +245,8 @@ app.patch<{Params:{name:string},Body:{days:number|null}}>('/api/domains/:name/au
 });
 app.delete<{Params:{name:string}}>('/api/domains/:name', async (req,res) => {
   const removed=await db.query(
-    'UPDATE domains SET removed_at=now(), verified=false, last_received=NULL, prune_days=NULL WHERE name=$1 AND removed_at IS NULL',
+    `UPDATE domains SET removed_at=now(), verified=false, last_received=NULL, prune_days=NULL,
+    delivery_test_address=NULL,delivery_test_expires=NULL,delivery_verified_at=NULL WHERE name=$1 AND removed_at IS NULL`,
     [req.params.name]
   );
   if(!removed.rowCount) return res.code(404).send({message:'Domain not found'});

@@ -11,6 +11,9 @@ export async function migrate() {
     );
     ALTER TABLE domains ADD COLUMN IF NOT EXISTS removed_at timestamptz;
     ALTER TABLE domains ADD COLUMN IF NOT EXISTS prune_days integer CHECK (prune_days BETWEEN 1 AND 3650);
+    ALTER TABLE domains ADD COLUMN IF NOT EXISTS delivery_test_address text;
+    ALTER TABLE domains ADD COLUMN IF NOT EXISTS delivery_test_expires timestamptz;
+    ALTER TABLE domains ADD COLUMN IF NOT EXISTS delivery_verified_at timestamptz;
     CREATE TABLE IF NOT EXISTS messages (
       id uuid PRIMARY KEY, domain text NOT NULL REFERENCES domains(name),
       recipient text NOT NULL, sender text NOT NULL, raw bytea NOT NULL,
@@ -60,6 +63,7 @@ export async function migrate() {
     );
     ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS domain text;
     ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS bytes bigint NOT NULL DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS ingest_log_activity ON ingest_log(domain,time DESC,id DESC);
     CREATE INDEX IF NOT EXISTS ingest_log_domain_time ON ingest_log(domain,time) WHERE status='stored';
     CREATE INDEX IF NOT EXISTS ingest_log_rejected_time ON ingest_log(time) WHERE status<>'stored';
   `);
