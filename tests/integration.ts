@@ -44,8 +44,8 @@ const server=spawn(process.execPath,['--import','tsx','src/server.ts'],{
 });
 try {
   await db.query('INSERT INTO domains(name,verified) VALUES($1,true) ON CONFLICT(name) DO UPDATE SET verified=true',[domain]);
-  await importMail(id,'sender@example.net',recipient,raw);
-  await importMail(id,'sender@example.net',recipient,raw);
+  await importMail(id,'sender'+('abcdefghijklmnop'.repeat(8))+'@example.net',recipient,raw);
+  await importMail(id,'sender'+('abcdefghijklmnop'.repeat(8))+'@example.net',recipient,raw);
   await parseNext();
   for(let i=0;i<50;i++){
     try { if((await fetch(origin)).ok)break; }catch{}
@@ -211,6 +211,9 @@ try {
         assert.equal(await page.locator('.message-row input:checked').count(),0);
         assert.equal(await rows.count(),0);
         await bulkRows.first().press('Shift+Enter');
+        await page.getByRole('button',{name:'Clear selection',exact:true}).click();
+        assert.equal(await rows.count(),0);
+        await bulkRows.first().press('Shift+Enter');
         await selectAll.check();
         await page.locator('.bulk-toolbar').getByRole('button',{name:'Trash',exact:true}).click();
         const bulkTrash=page.getByRole('dialog',{name:'Move 101 messages to Trash?'});
@@ -223,6 +226,12 @@ try {
       await searchBox.fill(recipient);
       const mailRow=page.getByRole('button',{name:/Invoice 42/}).first();
       await mailRow.waitFor();
+      assert.equal(await mailRow.evaluate(el=>{
+        const list=el.closest('.rows')!;
+        const bounds=el.getBoundingClientRect();
+        const date=el.querySelector('time')!.getBoundingClientRect();
+        return list.scrollWidth<=list.clientWidth+1&&date.right<=bounds.right;
+      }),true);
       if(size.width===1440||size.width===390)await mailRow.locator('.unread-dot').waitFor();
       if(size.width===390){
         await page.locator('.mobile-unread-dot').waitFor();
@@ -247,7 +256,8 @@ try {
         await page.waitForFunction(count=>document.querySelector('.inbox-badge')?.textContent===count,
           String(Number(unreadBefore)-1));
       }
-      await page.getByRole('button',{name:'Headers'}).click();
+      await page.locator('.reader-more summary').click();
+      await page.getByRole('button',{name:'Headers',exact:true}).click();
       await page.getByText(/different@example.org/).first().waitFor();
       if(size.width===1440){
         const trashButton=page.getByRole('region',{name:'Message reader'}).getByRole('button',{name:'Trash',exact:true});
@@ -272,6 +282,8 @@ try {
       if(size.width<=860)await page.getByRole('button',{name:'Back to messages'}).click();
       if(size.width===1440){
         await page.getByRole('button',{name:'Integrations',exact:true}).click();
+        assert.equal(await page.getByLabel('Receive events from').count(),0);
+        await page.getByRole('button',{name:'New webhook'}).click();
         const scope=page.getByLabel('Receive events from');
         await scope.selectOption('filter');
         await page.getByLabel('Domain or address',{exact:true}).waitFor();

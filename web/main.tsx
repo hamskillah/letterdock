@@ -140,6 +140,7 @@ function App(){
   const [removingAddress,setRemovingAddress]=useState<string|null>(null);
   const [addressRemovalPending,setAddressRemovalPending]=useState(false);
   const [ruleHooks,setRuleHooks]=useState<{id:string;url:string}[]>([]);
+  const [integrationForm,setIntegrationForm]=useState<'key'|'hook'|null>(null);
   const [webhookScope,setWebhookScope]=useState('all');
   const [addresses,setAddresses]=useState<Address[]>([]);
   const [domain,setDomain]=useState('');
@@ -443,184 +444,11 @@ function App(){
   const inboxUnread=addresses.reduce((count,item)=>count+item.unread,0);
   const filtered=Boolean(query.trim()||unreadOnly||Object.values(filters).some(Boolean));
   const heading=address||domain||(starOnly?'Starred':folder==='inbox'?'Inbox':folder==='archive'?'Archive':'Trash');
-  return <div className={'app '+(mobileNav?'show-nav ':'')+(detail&&page==='Inbox'?'show-detail':'')}>
-    {mobileNav&&<div className="nav-scrim" aria-hidden="true" onClick={()=>setMobileNav(false)}/>}
-    <aside className="sidebar" id="workspace-navigation" role={mobileNav?'dialog':undefined} aria-modal={mobileNav||undefined} aria-label="Letterdock navigation">
-      <div className="brand">{logo}<span>Letterdock</span><button className="icon mobile" aria-label="Close menu" ref={closeMenuButton} onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
-      <nav aria-label="Workspace">
-        <span className="nav-caption">Mailbox</span>
-        <button className={page==='Inbox'&&heading==='Inbox'?'active':''} onClick={()=>mailbox()}><Inbox size={17}/>Inbox{inboxUnread>0&&<><span className="inbox-badge" aria-hidden="true">{inboxUnread>99?'99+':inboxUnread}</span><span className="sr-only">, {inboxUnread} unread</span></>}</button>
-        <button className={page==='Inbox'&&starOnly?'active':''} onClick={()=>mailbox('inbox','','',true)}><Star size={17}/>Starred</button>
-        <button className={page==='Inbox'&&folder==='archive'?'active':''} onClick={()=>mailbox('archive')}><Archive size={17}/>Archive</button>
-        <button className={page==='Inbox'&&folder==='trash'?'active':''} onClick={()=>mailbox('trash')}><Trash2 size={17}/>Trash</button>
-        <button className={page==='Addresses'?'active':''} aria-current={page==='Addresses'?'page':undefined} onClick={()=>void navigate('Addresses')}><Mail size={17}/>Addresses</button>
-        <span className="nav-caption">Manage</span>
-        {[['Domains',Globe],['Integrations',Boxes],['Health',CircleGauge]].map(([name,Icon])=>{
-          const Glyph=Icon as typeof Globe;
-          return <button key={String(name)} className={page===name?'active':''} onClick={()=>void navigate(String(name))}><Glyph size={17}/>{String(name)}</button>;
-        })}
-        {domains.length>0&&<span className="nav-caption">Domains</span>}
-        {domains.map(item=><button title={item.name} key={item.name} className={domain===item.name&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox',item.name)}><span className={'dot '+(item.verified?'online':'')}/><span className="ellipsis">{item.name}</span></button>)}
-        {addresses.some(item=>item.pinned)&&<span className="nav-caption">Pinned addresses</span>}
-        {addresses.filter(item=>item.pinned).map(item=><button title={item.address} key={item.address} className={address===item.address&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox','',item.address)}><Mail size={15}/><span className="ellipsis">{item.name||item.address}</span>{item.unread>0&&<span className="address-count">{item.unread}</span>}</button>)}
-      </nav>
-      <button className="signout" onClick={()=>void action(async()=>{await api('/logout','POST');setAuthorized(false);setDetail(null);setMessages([]);})}><LogOut size={17}/>Sign out</button>
-    </aside>
-    <main className="workspace" inert={mobileNav||undefined}>
-      <header className="topbar"><button className="icon mobile" aria-label="Open menu" aria-controls="workspace-navigation" aria-expanded={mobileNav} ref={menuButton} onClick={()=>setMobileNav(true)}><Menu size={20}/>{inboxUnread>0&&<span className="mobile-unread-dot" aria-hidden="true"/>}</button><span>Workspace</span><ChevronRight size={13} aria-hidden="true"/><strong>{page}</strong><span className="sr-only" role="status">{inboxUnread>0?inboxUnread+' unread inbox messages':'No unread inbox messages'}</span></header>
-      {(error||notice)&&<div className={error?'banner error':'banner'} role={error?'alert':'status'}>{error||notice}<button className="icon" aria-label="Dismiss" onClick={()=>{setError('');setNotice('');}}><X size={16}/></button></div>}
-      {page==='Inbox'&&<div className="mail-layout">
-        <section className="message-list" aria-label="Message list">
-          <div className="list-head">
-            <div className="list-title"><h1>{heading}</h1></div>
-            {address&&visibleAddresses.some(item=>item.address===address)&&<button className="inbox-settings-link" onClick={()=>void action(async()=>{await openAddressSettings(address);setAddressQuery(address);setAddressDomain('');await navigate('Addresses');})}><Settings2 size={14}/> Address settings</button>}
-            {folder==='trash'&&<p className="trash-note">Messages and attachments are permanently deleted after {trashRetentionDays} days in Trash.</p>}
-            <div className="search"><Search size={17} aria-hidden="true"/><input ref={searchInput} aria-label="Search messages" aria-keyshortcuts="/" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/>
-              {query?<button className="icon" aria-label="Clear search" onClick={()=>{setQuery('');searchInput.current?.focus();}}><X size={15}/></button>:<kbd aria-hidden="true">/</kbd>}
-              <button className={'icon '+(advanced?'filter-active':'')} aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button>
-            </div>
-            <div className="inbox-scope" aria-label="Read status">
-              <button aria-pressed={!unreadOnly} onClick={()=>setUnreadOnly(false)}>All messages</button>
-              <button aria-pressed={unreadOnly} onClick={()=>setUnreadOnly(true)}>Unread</button>
-            </div>
-            {advanced&&<div className="filters">{Object.entries(filters).filter(([key])=>key!=='attachment').map(([key,value])=><label key={key}>{key}<input type={['since','until'].includes(key)?'date':'text'} value={value} onChange={e=>setFilters({...filters,[key]:e.target.value})}/></label>)}
-              <label className="check"><input type="checkbox" checked={filters.attachment==='true'} onChange={e=>setFilters({...filters,attachment:e.target.checked?'true':''})}/>Has attachment</label>
-              <button onClick={()=>{setFilters(blankFilters);setUnreadOnly(false);}}>Clear filters</button>
-            </div>}
-            {!loading&&selected.length>0&&<div className="bulk-toolbar">
-              <label title="Select all loaded messages">
-                <input type="checkbox" checked={allMessagesSelected} disabled={bulkUpdating}
-                  ref={input=>{if(input)input.indeterminate=selected.length>0&&!allMessagesSelected;}}
-                  onChange={event=>setSelected(event.target.checked?messages.map(message=>message.id):[])}/>
-                Select all
-              </label>
-              {selected.length>0&&<div className="compact">
-                <span role="status">{selected.length} selected</span>
-                <button disabled={bulkUpdating} onClick={()=>void updateSelection({folder:folder==='inbox'?'archive':'inbox'})}>{folder==='inbox'?'Archive':'Restore'}</button>
-                <button disabled={bulkUpdating} onClick={()=>void updateSelection({unread:false})}>Mark read</button>
-                {folder!=='trash'&&<button disabled={bulkUpdating} onClick={()=>setTrashPrompt({ids:selected,bulk:true})}>Trash</button>}
-              </div>}
-            </div>}
-          </div>
-          <div className={selected.length?"rows selecting":"rows"}>
-            {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><span><Inbox size={22}/></span><strong>{filtered?'No matching messages':'No messages here'}</strong>{filtered&&<button onClick={()=>{setQuery('');setFilters(blankFilters);setUnreadOnly(false);}}>Clear search and filters</button>}{!filtered&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
-              <div className={'message-row '+(detail?.id===message.id?'chosen ':'')+(message.unread?'unread':'')} key={message.id}>
-                {selected.length>0&&<input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selectedIds.has(message.id)} disabled={bulkUpdating} onChange={()=>toggleMessage(message.id)}/>}
-                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} aria-keyshortcuts="Shift+Enter"
-                  onPointerDown={event=>startPress(event,message.id)} onPointerMove={movePress}
-                  onPointerUp={cancelPress} onPointerCancel={cancelPress} onPointerLeave={cancelPress}
-                  onContextMenu={event=>event.preventDefault()} onKeyDown={event=>{
-                    if(event.key==='Enter'&&event.shiftKey&&!bulkUpdating){event.preventDefault();if(!event.repeat)toggleMessage(message.id);}
-                    if(event.key==='Escape'&&selected.length&&!bulkUpdating){event.preventDefault();setSelected([]);}
-                  }} onClick={event=>{
-                    if(event.detail>0&&heldMessage.current===message.id){heldMessage.current=null;return;}
-                    if(bulkUpdating)return;
-                    if(selected.length)toggleMessage(message.id);
-                    else void open(message);
-                  }}><span className="row-meta"><span className="row-sender"><span className="unread-dot" aria-hidden="true"/>{message.unread&&<span className="sr-only">Unread: </span>}<span className="ellipsis">{senderName(message.sender)}</span></span><time dateTime={message.received}>{emailDate.format(new Date(message.received))}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
-                <button className={'icon '+(message.starred?'starred':'')} aria-label={message.starred?'Remove star':'Star message'} onClick={()=>void update([message.id],{starred:!message.starred})}><Star size={16} fill={message.starred?'currentColor':'none'}/></button>
-              </div>)}
-            {more&&<button className="load-more" onClick={()=>void action(async()=>{const rows=await api<Message[]>(searchPath(messages.at(-1)?.id));setMessages([...messages,...rows]);setMore(rows.length===100);})}>Load older messages</button>}
-          </div>
-        </section>
-        <section className="reader" aria-label="Message reader">
-          {!detail?<div className="reader-empty"><span><Mail size={26}/></span><h2>Select a message</h2><p>Open an email to read it and view its attachments.</p></div>:
-          <article>
-            <div className="reader-actions">
-              <button className="icon mobile" aria-label="Back to messages" onClick={()=>setDetail(null)}><ArrowLeft size={19}/></button>
-              <button onClick={()=>void update([detail.id],{unread:!detail.unread})}>{detail.unread?'Mark read':'Mark unread'}</button>
-              <button onClick={()=>void update([detail.id],{folder:detail.folder==='inbox'?'archive':'inbox'})}>{detail.folder==='inbox'?'Archive':'Restore'}</button>
-              {detail.folder!=='trash'?<button onClick={()=>setTrashPrompt({ids:[detail.id],bulk:false})}>Trash</button>:<button onClick={()=>{if(confirm('Permanently delete this message?'))void action(async()=>{await api('/messages/'+detail.id,'DELETE');setDetail(null);await refresh();});}}>Delete permanently</button>}
-              <a className="button" href={'/api/raw/'+detail.id}><ArrowDownToLine size={15}/>.eml</a>
-              <div className="reader-navigation" aria-label="Message navigation">
-                <button className="icon" aria-label="Previous message" disabled={!previous} onClick={()=>{if(previous)void open(previous);}}><ChevronLeft size={17}/></button>
-                <button className="icon" aria-label="Next message" disabled={!next} onClick={()=>{if(next)void open(next);}}><ChevronRight size={17}/></button>
-              </div>
-            </div>
-            <h2 className="subject">{detail.subject||'(No subject)'}</h2>
-            <dl className="message-meta"><dt>From</dt><dd>{detail.sender||'Unknown sender'}</dd><dt>Delivered to</dt><dd>{detail.recipient}</dd><dt>Received</dt><dd>{when(detail.received)}</dd></dl>
-            <div className="label-list">{detail.labels.map(label=><button key={label} onClick={()=>void update([detail.id],{removeLabel:label})}>{label}<X size={12}/></button>)}
-            <form className="compact" onSubmit={e=>{e.preventDefault();const value=new FormData(e.currentTarget).get('label');e.currentTarget.reset();void update([detail.id],{label:value});}}><input name="label" aria-label="New label" placeholder="Add label" required maxLength={60}/><button>Add</button></form></div>
-            {detail.attachments.length>0&&<section className="attachments"><h3>Attachments</h3>{detail.attachments.map(item=><div className="file" key={item.id}><Paperclip size={17}/><span className="ellipsis">{item.filename}</span><small>{Math.ceil(item.bytes/1024)} KB</small>{/^image\/(png|jpeg|gif|webp)$/.test(item.mime)&&<button onClick={()=>void action(async()=>{
-              const response=await fetch('/api/files/'+item.id);
-              if(!response.ok)throw Error('Preview unavailable');
-              setPreview({name:item.filename,url:URL.createObjectURL(new Blob([await response.arrayBuffer()],{type:item.mime}))});
-            })}>Preview</button>}<a className="button" href={'/api/files/'+item.id}>Download</a></div>)}</section>}
-            <div className="tabs" aria-label="Message format">{['Message','Plain text','Headers'].map(tab=><button key={tab} aria-pressed={view===tab} onClick={()=>setView(tab)}>{tab}</button>)}</div>
-            {detail.state==='failed'?<div className="error"><p>{detail.error}</p><button onClick={()=>void update([detail.id],{retry:true})}>Retry parsing</button></div>:detail.state==='pending'?<button onClick={()=>void open(detail)}>Refresh processing status</button>:view==='Headers'?<pre>{JSON.stringify(detail.headers,null,2)}</pre>:view==='Plain text'||!detail.html?<pre>{detail.body}</pre>:<iframe title="Email body" sandbox="" referrerPolicy="no-referrer" srcDoc={'<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><style>body{font:15px system-ui;line-height:1.65;margin:0;color:#252e29;overflow-wrap:anywhere}table{max-width:100%}</style>'+detail.html}/>}
-          </article>}
-        </section>
-      </div>}
-      {page==='Addresses'&&<section className="settings addresses-page">
-        <header className="settings-heading"><span className="section-icon"><Mail size={21}/></span><div><h1>Addresses</h1><p>Create an inbox address or manage addresses discovered by catch-all.</p></div></header>
-        {domains.some(item=>item.verified)?<form className="address-add" onSubmit={event=>submit(event,data=>api('/inboxes','POST',{
-          local:data.get('local'),domain:data.get('domain'),name:data.get('name')
-        }))}>
-          <label>Address prefix<input name="local" placeholder="billing" required maxLength={64} autoCapitalize="none" spellCheck={false}/></label>
-          <label>Receiving domain<select name="domain" required defaultValue={domains.find(item=>item.verified)?.name}>
-            {domains.filter(item=>item.verified).map(item=><option key={item.name}>{item.name}</option>)}
-          </select></label>
-          <label>Name <span className="optional">(optional)</span><input name="name" placeholder="Billing" maxLength={120}/></label>
-          <button className="primary">Add address</button>
-        </form>:<div className="domain-empty"><h2>Connect a receiving domain</h2><p>Verify a domain before you add addresses.</p><button onClick={()=>void navigate('Domains')}>Open Domains <ArrowUpRight size={14}/></button></div>}
-        <div className="address-tools">
-          <label>Find an address<input type="search" placeholder="Search by address or name" value={addressQuery} onChange={e=>setAddressQuery(e.target.value)}/></label>
-          <label>Domain<select value={addressDomain} onChange={e=>setAddressDomain(e.target.value)}>
-            <option value="">All domains</option>
-            {[...new Set([...domains.map(item=>item.name),...visibleAddresses.map(item=>item.address.split('@').at(-1)!)])].sort().map(item=><option key={item}>{item}</option>)}
-          </select></label>
-        </div>
-        <div className="address-list">
-          {matchingAddresses.map(item=><article className="address-row" key={item.address}>
-            <div className="address-identity"><Mail size={17}/><div><h2>{item.name||item.address}</h2>{item.name&&<p>{item.address}</p>}
-              {(item.auto_label||item.webhook_id)&&<p>{[item.auto_label&&'Auto-label: '+item.auto_label,item.webhook_id&&'Webhook assigned'].filter(Boolean).join(' · ')}</p>}
-            </div></div>
-            <div className="compact address-actions">
-              {item.unread>0&&<span className="address-count">{item.unread} unread</span>}
-              <button className="icon" aria-label={item.pinned?'Unpin':'Pin'} title={item.pinned?'Unpin':'Pin'} aria-pressed={item.pinned} onClick={()=>void action(async()=>{
-                await api('/inboxes','PATCH',{address:item.address,pinned:!item.pinned});await directory();
-              })}><Star size={16} fill={item.pinned?'currentColor':'none'}/></button>
-              <button aria-expanded={ruleAddress===item.address} aria-controls={ruleAddress===item.address?'address-settings':undefined} onClick={()=>void action(async()=>{
-                if(ruleAddress===item.address){setRuleAddress('');return;}
-                await openAddressSettings(item.address);
-              })}><Settings2 size={15}/> Settings</button>
-              <button onClick={()=>mailbox('inbox','',item.address)}>Open inbox <ArrowUpRight size={14}/></button>
-            </div>
-            {ruleAddress===item.address&&<form id="address-settings" aria-label={'Settings for '+item.address} className="address-rules" onSubmit={event=>submit(event,async data=>{
-              await api('/inbox-rules','PATCH',{address:item.address,name:data.get('name'),label:data.get('label'),webhookId:data.get('webhook')||null});
-              setRuleAddress('');
-              setNotice('Address settings saved');
-            })}>
-              <div className="address-settings-fields">
-                <label htmlFor="address-name">Display name<input id="address-name" name="name" maxLength={120} defaultValue={item.name}/></label>
-                <label htmlFor="rule-label">Automatic label<input id="rule-label" name="label" maxLength={60} defaultValue={item.auto_label??''} placeholder="None"/></label>
-                <label htmlFor="rule-webhook">Webhook for new mail<select id="rule-webhook" name="webhook" defaultValue={item.webhook_id??''}>
-                  <option value="">None</option>
-                  {ruleHooks.map(hook=><option key={hook.id} value={hook.id}>{hook.url}</option>)}
-                </select></label>
-              </div>
-              <div className="address-settings-footer">
-                <div className="compact">
-                  <button type="button" className="danger" onClick={()=>setRemovingAddress(item.address)}><Trash2 size={14}/> Remove address</button>
-                  <button type="button" onClick={()=>void action(()=>navigator.clipboard.writeText(item.address),'Address copied')}><Copy size={14}/> Copy address</button>
-                  {ruleHooks.length===0&&<button type="button" onClick={()=>{setWebhookScope('selected');void navigate('Integrations');}}>Set up a webhook <ArrowUpRight size={14}/></button>}
-                </div>
-                <div className="compact"><button type="button" onClick={()=>setRuleAddress('')}>Cancel</button><button type="submit" className="primary">Save settings</button></div>
-              </div>
-            </form>}
-          </article>)}
-          {matchingAddresses.length===0&&
-            <p className="empty-state">{visibleAddresses.length?'No addresses match these filters.':'No addresses yet. Add one above or receive an email at a new address.'}</p>}
-        </div>
-      </section>}
-      {page==='Domains'&&<section className="settings domains-page">
-        <header className="settings-heading"><span className="section-icon"><Globe size={21}/></span><div><h1>Domains</h1><p>Connect domains you own and receive mail at any address.</p></div></header>
-        {connection&&<section className="domain-card connection-card" aria-labelledby="cloudflare-connection">
-          <div className="domain-title"><div><h2 id="cloudflare-connection">Cloudflare connection</h2>
-            <p>Connect once to set up DNS and catch-all from Letterdock.</p></div>
+  const cloudflarePanel=connection&&<details className="domain-card connection-card" open={!connection.configured||undefined}>
+          <summary className="connection-summary"><strong>Cloudflare connection</strong>
             <span className={'status '+(connection.configured?'ok':'')}>{connection.oauthConnected?'OAuth connected':connection.configured?'Token connected':'Connect required'}</span>
-          </div>
-          <dl className="connection-checks">
+          </summary>
+          <div className="connection-options"><dl className="connection-checks">
             <div><dt>API access</dt><dd>{connection.configured?'Configured':'Authorize access'}</dd></div>
             <div><dt>Email Worker</dt><dd>{connection.workerConfigured?'Configured':'Deploy Worker'}</dd></div>
             <div><dt>Private R2 staging</dt><dd>{connection.stagingConfigured?'Configured':'Configure R2'}</dd></div>
@@ -664,12 +492,197 @@ function App(){
             </form>
           </details>}
           {(!connection.workerConfigured||!connection.stagingConfigured)&&<p className="setup-hint">Cloudflare domains can provision a Worker and R2 automatically during setup. <a href="https://github.com/hamskillah/letterdock#receive-mail" target="_blank" rel="noreferrer">Deployment guide</a></p>}
-        </section>}
+          </div></details>;
+  return <div className={'app '+(mobileNav?'show-nav ':'')+(detail&&page==='Inbox'?'show-detail':'')}>
+    {mobileNav&&<div className="nav-scrim" aria-hidden="true" onClick={()=>setMobileNav(false)}/>}
+    <aside className="sidebar" id="workspace-navigation" role={mobileNav?'dialog':undefined} aria-modal={mobileNav||undefined} aria-label="Letterdock navigation">
+      <div className="brand">{logo}<span>Letterdock</span><button className="icon mobile" aria-label="Close menu" ref={closeMenuButton} onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
+      <nav aria-label="Workspace">
+        <span className="nav-caption">Mailbox</span>
+        <button className={page==='Inbox'&&heading==='Inbox'?'active':''} onClick={()=>mailbox()}><Inbox size={17}/>Inbox{inboxUnread>0&&<><span className="inbox-badge" aria-hidden="true">{inboxUnread>99?'99+':inboxUnread}</span><span className="sr-only">, {inboxUnread} unread</span></>}</button>
+        <button className={page==='Inbox'&&starOnly?'active':''} onClick={()=>mailbox('inbox','','',true)}><Star size={17}/>Starred</button>
+        <button className={page==='Inbox'&&folder==='archive'?'active':''} onClick={()=>mailbox('archive')}><Archive size={17}/>Archive</button>
+        <button className={page==='Inbox'&&folder==='trash'?'active':''} onClick={()=>mailbox('trash')}><Trash2 size={17}/>Trash</button>
+        <button className={page==='Addresses'?'active':''} aria-current={page==='Addresses'?'page':undefined} onClick={()=>void navigate('Addresses')}><Mail size={17}/>Addresses</button>
+        <span className="nav-caption">Manage</span>
+        {[['Domains',Globe],['Integrations',Boxes],['Health',CircleGauge]].map(([name,Icon])=>{
+          const Glyph=Icon as typeof Globe;
+          return <button key={String(name)} className={page===name?'active':''} onClick={()=>void navigate(String(name))}><Glyph size={17}/>{String(name)}</button>;
+        })}
+        {domains.length>0&&<span className="nav-caption">Domains</span>}
+        {domains.map(item=><button title={item.name} key={item.name} className={domain===item.name&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox',item.name)}><span className={'dot '+(item.verified?'online':'')}/><span className="ellipsis">{item.name}</span></button>)}
+        {addresses.some(item=>item.pinned)&&<span className="nav-caption">Pinned addresses</span>}
+        {addresses.filter(item=>item.pinned).map(item=><button title={item.address} key={item.address} className={address===item.address&&page==='Inbox'?'active':''} onClick={()=>mailbox('inbox','',item.address)}><Mail size={15}/><span className="ellipsis">{item.name||item.address}</span>{item.unread>0&&<span className="address-count">{item.unread}</span>}</button>)}
+      </nav>
+      <button className="signout" onClick={()=>void action(async()=>{await api('/logout','POST');setAuthorized(false);setDetail(null);setMessages([]);})}><LogOut size={17}/>Sign out</button>
+    </aside>
+    <main className="workspace" inert={mobileNav||undefined}>
+      <header className="topbar"><button className="icon mobile" aria-label="Open menu" aria-controls="workspace-navigation" aria-expanded={mobileNav} ref={menuButton} onClick={()=>setMobileNav(true)}><Menu size={20}/>{inboxUnread>0&&<span className="mobile-unread-dot" aria-hidden="true"/>}</button><span>Workspace</span><ChevronRight size={13} aria-hidden="true"/><strong className="ellipsis">{page==='Inbox'?heading:page}</strong><span className="sr-only" role="status">{inboxUnread>0?inboxUnread+' unread inbox messages':'No unread inbox messages'}</span></header>
+      {(error||notice)&&<div className={error?'banner error':'banner'} role={error?'alert':'status'}>{error||notice}<button className="icon" aria-label="Dismiss" onClick={()=>{setError('');setNotice('');}}><X size={16}/></button></div>}
+      {page==='Inbox'&&<div className="mail-layout">
+        <section className="message-list" aria-label="Message list">
+          <div className="list-head">
+            <div className="list-title"><h1>{heading}</h1>{!loading&&messages.length>0&&selected.length===0&&<span className="selection-hint" title="Hold a message or use Shift+Enter">Hold to select</span>}</div>
+            {address&&visibleAddresses.some(item=>item.address===address)&&<button className="inbox-settings-link" onClick={()=>void action(async()=>{await openAddressSettings(address);setAddressQuery(address);setAddressDomain('');await navigate('Addresses');})}><Settings2 size={14}/> Address settings</button>}
+            {folder==='trash'&&<p className="trash-note">Messages and attachments are permanently deleted after {trashRetentionDays} days in Trash.</p>}
+            <div className="search"><Search size={17} aria-hidden="true"/><input ref={searchInput} aria-label="Search messages" aria-keyshortcuts="/" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/>
+              {query?<button className="icon" aria-label="Clear search" onClick={()=>{setQuery('');searchInput.current?.focus();}}><X size={15}/></button>:<kbd aria-hidden="true">/</kbd>}
+              <button className={'icon '+(advanced?'filter-active':'')} aria-label="Search filters" aria-expanded={advanced} onClick={()=>setAdvanced(!advanced)}><Filter size={17}/></button>
+            </div>
+            <div className="inbox-scope" aria-label="Read status">
+              <button aria-pressed={!unreadOnly} onClick={()=>setUnreadOnly(false)}>All messages</button>
+              <button aria-pressed={unreadOnly} onClick={()=>setUnreadOnly(true)}>Unread</button>
+            </div>
+            {advanced&&<div className="filters">{Object.entries(filters).filter(([key])=>key!=='attachment').map(([key,value])=><label key={key}>{key}<input type={['since','until'].includes(key)?'date':'text'} value={value} onChange={e=>setFilters({...filters,[key]:e.target.value})}/></label>)}
+              <label className="check"><input type="checkbox" checked={filters.attachment==='true'} onChange={e=>setFilters({...filters,attachment:e.target.checked?'true':''})}/>Has attachment</label>
+              <button onClick={()=>{setFilters(blankFilters);setUnreadOnly(false);}}>Clear filters</button>
+            </div>}
+            {!loading&&selected.length>0&&<div className="bulk-toolbar">
+              <label title="Select all loaded messages">
+                <input type="checkbox" checked={allMessagesSelected} disabled={bulkUpdating}
+                  ref={input=>{if(input)input.indeterminate=selected.length>0&&!allMessagesSelected;}}
+                  onChange={event=>setSelected(event.target.checked?messages.map(message=>message.id):[])}/>
+                Select all
+              </label>
+              {selected.length>0&&<div className="compact">
+                <span role="status">{selected.length} selected</span><button className="clear-selection" disabled={bulkUpdating} onClick={()=>setSelected([])}>Clear selection</button>
+                <button disabled={bulkUpdating} onClick={()=>void updateSelection({folder:folder==='inbox'?'archive':'inbox'})}>{folder==='inbox'?'Archive':'Restore'}</button>
+                <button disabled={bulkUpdating} onClick={()=>void updateSelection({unread:false})}>Mark read</button>
+                {folder!=='trash'&&<button disabled={bulkUpdating} onClick={()=>setTrashPrompt({ids:selected,bulk:true})}>Trash</button>}
+              </div>}
+            </div>}
+          </div>
+          <div className={selected.length?"rows selecting":"rows"}>
+            {loading?<p className="list-empty" role="status">Loading messages…</p>:messages.length===0?<div className="list-empty"><span><Inbox size={22}/></span><strong>{filtered?'No matching messages':starOnly?'No starred messages':folder==='archive'?'Archive is empty':folder==='trash'?'Trash is empty':'No messages here'}</strong>{filtered&&<button onClick={()=>{setQuery('');setFilters(blankFilters);setUnreadOnly(false);}}>Clear search and filters</button>}{!filtered&&folder==='inbox'&&!domains.length&&<button onClick={()=>void navigate('Domains')}>Connect a domain <ArrowUpRight size={14}/></button>}</div>:messages.map(message=>
+              <div className={'message-row '+(detail?.id===message.id?'chosen ':'')+(message.unread?'unread':'')} key={message.id}>
+                {selected.length>0&&<input type="checkbox" aria-label={'Select '+(message.subject||'message')} checked={selectedIds.has(message.id)} disabled={bulkUpdating} onChange={()=>toggleMessage(message.id)}/>}
+                <button className="message-link" aria-current={detail?.id===message.id?'true':undefined} aria-keyshortcuts="Shift+Enter"
+                  onPointerDown={event=>startPress(event,message.id)} onPointerMove={movePress}
+                  onPointerUp={cancelPress} onPointerCancel={cancelPress} onPointerLeave={cancelPress}
+                  onContextMenu={event=>event.preventDefault()} onKeyDown={event=>{
+                    if(event.key==='Enter'&&event.shiftKey&&!bulkUpdating){event.preventDefault();if(!event.repeat)toggleMessage(message.id);}
+                    if(event.key==='Escape'&&selected.length&&!bulkUpdating){event.preventDefault();setSelected([]);}
+                  }} onClick={event=>{
+                    if(event.detail>0&&heldMessage.current===message.id){heldMessage.current=null;return;}
+                    if(bulkUpdating)return;
+                    if(selected.length)toggleMessage(message.id);
+                    else void open(message);
+                  }}><span className="row-meta"><span className="row-sender"><span className="unread-dot" aria-hidden="true"/>{message.unread&&<span className="sr-only">Unread: </span>}<span className="ellipsis" title={senderName(message.sender)}>{senderName(message.sender)}</span></span><time dateTime={message.received}>{emailDate.format(new Date(message.received))}</time></span><strong className="ellipsis">{message.subject||'(No subject)'}</strong><small className="ellipsis">{message.recipient}</small></button>
+                <button className={'icon '+(message.starred?'starred':'')} aria-label={message.starred?'Remove star':'Star message'} onClick={()=>void update([message.id],{starred:!message.starred})}><Star size={16} fill={message.starred?'currentColor':'none'}/></button>
+              </div>)}
+            {more&&<button className="load-more" onClick={()=>void action(async()=>{const rows=await api<Message[]>(searchPath(messages.at(-1)?.id));setMessages([...messages,...rows]);setMore(rows.length===100);})}>Load older messages</button>}
+          </div>
+        </section>
+        <section className="reader" aria-label="Message reader">
+          {!detail?<div className="reader-empty"><span><Mail size={26}/></span><h2>Select a message</h2><p>Open an email to read it and view its attachments.</p></div>:
+          <article>
+            <div className="reader-actions">
+              <button className="icon mobile" aria-label="Back to messages" onClick={()=>setDetail(null)}><ArrowLeft size={19}/></button>
+              <button onClick={()=>void update([detail.id],{folder:detail.folder==='inbox'?'archive':'inbox'})}>{detail.folder==='inbox'?'Archive':'Restore'}</button>
+              {detail.folder!=='trash'?<button onClick={()=>setTrashPrompt({ids:[detail.id],bulk:false})}>Trash</button>:<button onClick={()=>{if(confirm('Permanently delete this message?'))void action(async()=>{await api('/messages/'+detail.id,'DELETE');setDetail(null);await refresh();});}}>Delete permanently</button>}
+              <details className="reader-more" key={detail.id}>
+                <summary>More</summary>
+                <div className="reader-more-panel">
+                  <button onClick={()=>void update([detail.id],{unread:!detail.unread})}>{detail.unread?'Mark read':'Mark unread'}</button>
+                  {['Message','Plain text','Headers'].map(tab=><button key={tab} aria-pressed={view===tab} onClick={event=>{setView(tab);const panel=event.currentTarget.closest('details');if(panel){panel.open=false;panel.querySelector('summary')?.focus();}}}>{tab}</button>)}
+                  <a className="button" href={'/api/raw/'+detail.id}><ArrowDownToLine size={15}/> Download .eml</a>
+                </div>
+              </details>
+              <div className="reader-navigation" aria-label="Message navigation">
+                <button className="icon" aria-label="Previous message" disabled={!previous} onClick={()=>{if(previous)void open(previous);}}><ChevronLeft size={17}/></button>
+                <button className="icon" aria-label="Next message" disabled={!next} onClick={()=>{if(next)void open(next);}}><ChevronRight size={17}/></button>
+              </div>
+            </div>
+            <h2 className="subject">{detail.subject||'(No subject)'}</h2>
+            <details className="message-details" key={detail.id}>
+              <summary><span className="ellipsis">{senderName(detail.sender)}</span><time dateTime={detail.received}>{emailDate.format(new Date(detail.received))}</time></summary>
+              <dl className="message-meta"><dt>From</dt><dd>{detail.sender||'Unknown sender'}</dd><dt>Delivered to</dt><dd>{detail.recipient}</dd><dt>Received</dt><dd>{when(detail.received)}</dd></dl>
+              <div className="label-list">{detail.labels.map(label=><button key={label} onClick={()=>void update([detail.id],{removeLabel:label})}>{label}<X size={12}/></button>)}
+            <form className="compact" onSubmit={e=>{e.preventDefault();const value=new FormData(e.currentTarget).get('label');e.currentTarget.reset();void update([detail.id],{label:value});}}><input name="label" aria-label="New label" placeholder="Add label" required maxLength={60}/><button>Add</button></form></div>
+            </details>
+            {detail.attachments.length>0&&<section className="attachments"><h3>Attachments</h3>{detail.attachments.map(item=><div className="file" key={item.id}><Paperclip size={17}/><span className="ellipsis">{item.filename}</span><small>{Math.ceil(item.bytes/1024)} KB</small>{/^image\/(png|jpeg|gif|webp)$/.test(item.mime)&&<button onClick={()=>void action(async()=>{
+              const response=await fetch('/api/files/'+item.id);
+              if(!response.ok)throw Error('Preview unavailable');
+              setPreview({name:item.filename,url:URL.createObjectURL(new Blob([await response.arrayBuffer()],{type:item.mime}))});
+            })}>Preview</button>}<a className="button" href={'/api/files/'+item.id}>Download</a></div>)}</section>}
+            {view!=='Message'&&<div className="reader-format"><strong>{view}</strong><button onClick={()=>setView('Message')}>Back to message</button></div>}
+            {detail.state==='failed'?<div className="error"><p>{detail.error}</p><button onClick={()=>void update([detail.id],{retry:true})}>Retry parsing</button></div>:detail.state==='pending'?<button onClick={()=>void open(detail)}>Refresh processing status</button>:view==='Headers'?<pre>{JSON.stringify(detail.headers,null,2)}</pre>:view==='Plain text'||!detail.html?<pre>{detail.body}</pre>:<iframe title="Email body" sandbox="" referrerPolicy="no-referrer" srcDoc={'<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><style>body{font:15px system-ui;line-height:1.65;margin:0;color:#252e29;overflow-wrap:anywhere}table{max-width:100%}</style>'+detail.html}/>}
+          </article>}
+        </section>
+      </div>}
+      {page==='Addresses'&&<section className="settings addresses-page">
+        <header className="settings-heading"><span className="section-icon"><Mail size={21}/></span><div><h1>Addresses</h1><p>Create an inbox address or manage addresses discovered by catch-all.</p></div></header>
+        {domains.some(item=>item.verified)?<form className="address-add" onSubmit={event=>submit(event,data=>api('/inboxes','POST',{
+          local:data.get('local'),domain:data.get('domain'),name:data.get('name')
+        }))}>
+          <label>Address prefix<input name="local" placeholder="billing" required maxLength={64} autoCapitalize="none" spellCheck={false}/></label>
+          <label>Receiving domain<select name="domain" required defaultValue={domains.find(item=>item.verified)?.name}>
+            {domains.filter(item=>item.verified).map(item=><option key={item.name}>{item.name}</option>)}
+          </select></label>
+          <label>Name <span className="optional">(optional)</span><input name="name" placeholder="Billing" maxLength={120}/></label>
+          <button className="primary">Add address</button>
+        </form>:<div className="domain-empty"><h2>Connect a receiving domain</h2><p>Verify a domain before you add addresses.</p><button onClick={()=>void navigate('Domains')}>Open Domains <ArrowUpRight size={14}/></button></div>}
+        {visibleAddresses.length>0&&<div className="address-tools">
+          <label>Find an address<input type="search" placeholder="Search by address or name" value={addressQuery} onChange={e=>setAddressQuery(e.target.value)}/></label>
+          <label>Domain<select value={addressDomain} onChange={e=>setAddressDomain(e.target.value)}>
+            <option value="">All domains</option>
+            {[...new Set([...domains.map(item=>item.name),...visibleAddresses.map(item=>item.address.split('@').at(-1)!)])].sort().map(item=><option key={item}>{item}</option>)}
+          </select></label>
+        </div>}
+        <div className="address-list">
+          {matchingAddresses.map(item=><article className="address-row" key={item.address}>
+            <div className="address-identity"><Mail size={17}/><div><h2>{item.name||item.address}</h2>{item.name&&<p>{item.address}</p>}
+              {(item.auto_label||item.webhook_id)&&<p>{[item.auto_label&&'Auto-label: '+item.auto_label,item.webhook_id&&'Webhook assigned'].filter(Boolean).join(' · ')}</p>}
+            </div></div>
+            <div className="compact address-actions">
+              {item.unread>0&&<span className="address-count">{item.unread} unread</span>}
+              <button className="icon" aria-label={item.pinned?'Unpin':'Pin'} title={item.pinned?'Unpin':'Pin'} aria-pressed={item.pinned} onClick={()=>void action(async()=>{
+                await api('/inboxes','PATCH',{address:item.address,pinned:!item.pinned});await directory();
+              })}><Star size={16} fill={item.pinned?'currentColor':'none'}/></button>
+              <button aria-expanded={ruleAddress===item.address} aria-controls={ruleAddress===item.address?'address-settings':undefined} onClick={()=>void action(async()=>{
+                if(ruleAddress===item.address){setRuleAddress('');return;}
+                await openAddressSettings(item.address);
+              })}><Settings2 size={15}/> Settings</button>
+              <button onClick={()=>mailbox('inbox','',item.address)}>Open inbox <ArrowUpRight size={14}/></button>
+            </div>
+            {ruleAddress===item.address&&<form id="address-settings" aria-label={'Settings for '+item.address} className="address-rules" onSubmit={event=>submit(event,async data=>{
+              await api('/inbox-rules','PATCH',{address:item.address,name:data.get('name'),label:data.get('label'),webhookId:data.get('webhook')||null});
+              setRuleAddress('');
+              setNotice('Address settings saved');
+            })}>
+              <div className="address-settings-fields">
+                <label htmlFor="address-name">Display name<input id="address-name" name="name" maxLength={120} defaultValue={item.name}/></label>
+                <label htmlFor="rule-label">Automatic label<input id="rule-label" name="label" maxLength={60} defaultValue={item.auto_label??''} placeholder="None"/></label>
+                <label htmlFor="rule-webhook">Webhook for new mail<select id="rule-webhook" name="webhook" defaultValue={item.webhook_id??''}>
+                  <option value="">None</option>
+                  {ruleHooks.map(hook=><option key={hook.id} value={hook.id}>{hook.url}</option>)}
+                </select></label>
+              </div>
+              <div className="address-settings-footer">
+                <div className="compact">
+                  <button type="button" className="danger" onClick={()=>setRemovingAddress(item.address)}><Trash2 size={14}/> Remove address</button>
+                  <button type="button" onClick={()=>void action(()=>navigator.clipboard.writeText(item.address),'Address copied')}><Copy size={14}/> Copy address</button>
+                  {ruleHooks.length===0&&<button type="button" onClick={()=>{setWebhookScope('selected');setIntegrationForm('hook');void navigate('Integrations');}}>Set up a webhook <ArrowUpRight size={14}/></button>}
+                </div>
+                <div className="compact"><button type="button" onClick={()=>setRuleAddress('')}>Cancel</button><button type="submit" className="primary">Save settings</button></div>
+              </div>
+            </form>}
+          </article>)}
+          {matchingAddresses.length===0&&
+            <p className="empty-state">{visibleAddresses.length?'No addresses match these filters.':addresses.some(item=>item.removed_at)?'No active addresses. Email from removed addresses is still available in the mailbox.':'No addresses yet. Add one above or receive an email at a new address.'}</p>}
+        </div>
+      </section>}
+      {page==='Domains'&&<section className="settings domains-page">
+        <header className="settings-heading"><span className="section-icon"><Globe size={21}/></span><div><h1>Domains</h1><p>Connect domains you own and receive mail at any address.</p></div></header>
+        {connection&&!connection.configured&&cloudflarePanel}
+        <details className="domain-create" open={domains.length===0||undefined}>
+          <summary>Add a domain</summary>
         <form className="settings-form domain-add" onSubmit={e=>submit(e,async data=>{
           const {name}=await api<{name:string}>('/domains','POST',{name:data.get('name')});
           await directory();
           await checkCloudflare(name);
         })}><label>Domain name<input name="name" placeholder="example.com" required/></label><button className="primary">Add domain <ArrowUpRight size={15}/></button></form>
+        </details>
         {domains.length===0&&<div className="domain-empty"><Globe size={22}/><h2>No domains connected</h2><p>Add a domain to check its DNS and set up inbound mail.</p></div>}
         {domains.map(item=>{
           const check=cloudflare[item.name];
@@ -677,6 +690,7 @@ function App(){
           return <section className="domain-card" key={item.name}>
             <div className="domain-title"><div><h2>{item.name}</h2><span className={'status '+(item.verified?'ok':'')}>{item.last_received?'Receiving':item.verified?'DNS verified':'Setup required'}</span></div>
             <button className="icon danger" type="button" aria-label={'Remove '+item.name} onClick={()=>setRemoving(item.name)}><Trash2 size={17}/></button></div>
+            <DeliveryPanel domain={item}/>
             <div className="dns-panel">
               <div className="dns-heading"><h3>DNS records</h3><button disabled={Boolean(busy)} onClick={()=>void action(()=>checkCloudflare(item.name))}>Check DNS</button></div>
               {busy&&<p role="status">{busy}</p>}
@@ -696,7 +710,6 @@ function App(){
               })}>Authorize verification DNS <ArrowUpRight size={14}/></button>}
               {!item.verified&&<button className="primary" disabled={Boolean(busy)||Boolean(check?.applied)} onClick={()=>void action(()=>setupDomainFromDashboard(item.name))}>Set up domain</button>}
             </div>
-            <DeliveryPanel domain={item}/>
             <details className="prune-settings">
               <summary>Auto-prune · {item.prune_days===null?'Off':`After ${item.prune_days} days`}</summary>
               <p>Permanently deletes older email and attachments across all folders for this domain.</p>
@@ -720,27 +733,35 @@ function App(){
             </details>
           </section>;
         })}
+        {connection?.configured&&cloudflarePanel}
       </section>}
       {page==='Integrations'&&<section className="settings"><header className="settings-heading"><span className="section-icon"><Boxes size={21}/></span><h1>Integrations</h1></header>
         {credential&&<div className="secret"><strong>Copy this secret now</strong><code>{credential}</code><button onClick={()=>void action(()=>navigator.clipboard.writeText(credential),'Copied')}>Copy</button><button onClick={()=>setCredential('')}>Dismiss</button></div>}
-        <section className="settings-panel"><h2 id="api-key-heading">Read-only API keys</h2>
-        <form className="settings-form" aria-labelledby="api-key-heading" onSubmit={e=>submit(e,async data=>setCredential((await api<{secret:string}>('/keys','POST',{name:data.get('name'),domain:data.get('domain')})).secret))}>
-          <label htmlFor="key-name">Key name<input id="key-name" name="name" required maxLength={120}/></label>
+        <section className="settings-panel">
+        <div className="dns-heading"><h2 id="api-key-heading">Read-only API keys</h2><button aria-expanded={integrationForm==='key'} onClick={()=>setIntegrationForm(current=>current==='key'?null:'key')}>{integrationForm==='key'?'Cancel':'New API key'}</button></div>
+        {integration?.keys.length===0&&<p className="empty-state">No API keys yet.</p>}
+        {integrationForm==='key'&&<form className="settings-form" aria-labelledby="api-key-heading" onSubmit={e=>submit(e,async data=>{
+          const key=await api<{secret:string}>('/keys','POST',{name:data.get('name'),domain:data.get('domain')});
+          setCredential(key.secret);setIntegrationForm(null);
+        })}>
+          <label htmlFor="key-name">Key name<input id="key-name" name="name" autoFocus required maxLength={120}/></label>
           <label htmlFor="key-domain">Domain<select id="key-domain" name="domain" required defaultValue="">
             <option value="" disabled>Select a verified domain</option>
             {domains.filter(item=>item.verified).map(item=><option key={item.name}>{item.name}</option>)}
           </select></label>
           <button className="primary">Create key</button>
-        </form>
+        </form>}
         {integration?.keys.map(item=><div className="settings-row compact" key={item.id}><span><strong>{item.name}</strong><small>{item.domain??'Disabled · Create a domain-scoped key'}</small></span><button onClick={()=>{if(confirm('Revoke this API key?'))void action(async()=>{await api('/integrations/key/'+item.id,'DELETE');await refresh();});}}>Revoke</button></div>)}
-        </section><section className="settings-panel"><h2 id="webhook-heading">Webhooks</h2>
-        <form className="settings-form" aria-labelledby="webhook-heading" onSubmit={e=>submit(e,async data=>{
+        </section><section className="settings-panel">
+        <div className="dns-heading"><h2 id="webhook-heading">Webhooks</h2><button aria-expanded={integrationForm==='hook'} onClick={()=>{setWebhookScope('all');setIntegrationForm(current=>current==='hook'?null:'hook');}}>{integrationForm==='hook'?'Cancel':'New webhook'}</button></div>
+        {integration?.hooks.length===0&&<p className="empty-state">No webhooks yet.</p>}
+        {integrationForm==='hook'&&<><form className="settings-form" aria-labelledby="webhook-heading" onSubmit={e=>submit(e,async data=>{
           const hook=await api<{secret:string}>('/hooks','POST',{
             url:data.get('url'),filter:webhookScope==='filter'?data.get('filter'):null,addressOnly:webhookScope==='selected'
           });
-          setCredential(hook.secret);setWebhookScope('all');
+          setCredential(hook.secret);setWebhookScope('all');setIntegrationForm(null);
         })}>
-          <label>Public HTTPS endpoint<input name="url" type="url" required/></label>
+          <label>Public HTTPS endpoint<input name="url" type="url" autoFocus required/></label>
           <label>Receive events from<select name="scope" aria-describedby={webhookScope==='selected'?'webhook-scope-help':undefined} value={webhookScope} onChange={e=>setWebhookScope(e.target.value)}>
             <option value="all">All addresses</option>
             <option value="filter">One domain or address</option>
@@ -749,7 +770,7 @@ function App(){
           {webhookScope==='filter'&&<label>Domain or address<input name="filter" required placeholder="example.com"/></label>}
           <button type="submit" className="primary">Add webhook</button>
         </form>
-        {webhookScope==='selected'&&<p id="webhook-scope-help" className="webhook-scope-help">Assign this webhook from the settings of each address.</p>}
+        {webhookScope==='selected'&&<p id="webhook-scope-help" className="webhook-scope-help">Assign this webhook from the settings of each address.</p>}</>}
         {integration?.hooks.map(item=><div className="settings-row compact" key={item.id}><span>{item.url}</span><small>{item.address_only?'Selected addresses':item.filter||'All addresses'}</small><button onClick={()=>{if(confirm('Remove this webhook?'))void action(async()=>{await api('/integrations/hook/'+item.id,'DELETE');await refresh();});}}>Remove</button></div>)}
         </section><section className="settings-panel"><div className="dns-heading"><h2>Delivery attempts</h2><button onClick={()=>void action(refresh)}>Refresh history</button></div>
         {integration?.deliveries.length===0&&<p className="empty-state">No deliveries yet.</p>}
@@ -761,10 +782,14 @@ function App(){
         {health.queues.filter(row=>row.state!=='ready').map(row=><p key={row.state}>Oldest {row.state} message · {when(row.oldest)}</p>)}
         <section className="settings-panel"><h2>Staging connection</h2>
         <p>{!health.staging.configured?'R2 configuration required':health.staging.error?'Staging error. Check application logs.':health.staging.moreWaiting?'Importing staged messages':'Connected'}{health.staging.lastChecked&&' · '+when(health.staging.lastChecked)}</p>
-        </section><section className="settings-panel"><h2>Recent ingest</h2>{health.ingest.length===0&&<p className="empty-state">No ingest activity yet.</p>}{health.ingest.map(item=><div className="settings-row compact" key={item.id}><span>{item.recipient}</span><small>{item.status} · {when(item.time)}</small></div>)}
-        </section></>}<section className="settings-panel"><h2>Blocked envelope senders</h2><form className="settings-form" onSubmit={e=>submit(e,data=>api('/blocks','POST',{sender:data.get('sender')}))}><label>Sender<input name="sender" type="email" placeholder="sender@example.com" required/></label><button className="primary">Block</button></form>
+        </section></>}
+        <section className="settings-panel"><h2>Blocked envelope senders</h2><form className="settings-form" onSubmit={e=>submit(e,data=>api('/blocks','POST',{sender:data.get('sender')}))}><label>Sender<input name="sender" type="email" placeholder="sender@example.com" required/></label><button className="primary">Block</button></form>
         {blocks.map(item=><div className="settings-row compact" key={item.sender}><span>{item.sender}</span><button onClick={()=>void action(async()=>{await api('/blocks','POST',{sender:item.sender,remove:true});await refresh();})}>Unblock</button></div>)}
         </section>
+        {health&&<details className="settings-panel health-ingest"><summary>Recent ingest · {health.ingest.length}</summary>
+          {health.ingest.length===0&&<p className="empty-state">No ingest activity yet.</p>}
+          {health.ingest.map(item=><div className="settings-row compact" key={item.id}><span>{item.recipient}</span><small>{item.status} · {when(item.time)}</small></div>)}
+        </details>}
       </section>}
     </main>
     {trashPrompt&&<dialog className="remove-dialog" aria-labelledby="trash-title" aria-describedby="trash-description"
