@@ -91,6 +91,7 @@ export async function migrate() {
     );
     ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS workspace_id text DEFAULT 'default' REFERENCES workspaces(id);
     ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS domain text REFERENCES domains(name);
+    ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
     CREATE TABLE IF NOT EXISTS hooks (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), url text NOT NULL, secret text NOT NULL,
       filter text NOT NULL DEFAULT ''
@@ -173,5 +174,63 @@ export async function migrate() {
       WHERE status = 'processing';
     CREATE INDEX IF NOT EXISTS job_queue_workspace ON job_queue(workspace_id);
     CREATE INDEX IF NOT EXISTS job_queue_type ON job_queue(job_type);
+
+    -- Phase 3: Outbound Relay Profiles, Suppression Lists & Outbound Messages
+    CREATE TABLE IF NOT EXISTS outbound_profiles (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      domain text NOT NULL REFERENCES domains(name) ON DELETE CASCADE,
+      provider text NOT NULL CHECK (provider IN ('smtp', 'resend', 'ses', 'brevo', 'mock')),
+      credentials_encrypted text NOT NULL,
+      from_name text NOT NULL DEFAULT '',
+      from_email text NOT NULL DEFAULT '',
+      is_default boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT outbound_profiles_ws_domain_key UNIQUE (workspace_id, domain)
+    );
+    CREATE INDEX IF NOT EXISTS outbound_profiles_domain ON outbound_profiles(domain);
+
+    CREATE TABLE IF NOT EXISTS suppressions (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      domain text,
+      email text NOT NULL,
+      reason text NOT NULL CHECK (reason IN ('bounce', 'complaint', 'manual')),
+      details text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT suppressions_ws_email_key UNIQUE (workspace_id, email)
+    );
+    CREATE INDEX IF NOT EXISTS suppressions_email_lookup ON suppressions(email);
+
+    CREATE TABLE IF NOT EXISTS outbound_messages (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      domain text NOT NULL REFERENCES domains(name) ON DELETE CASCADE,
+      idempotency_key text,
+      from_address text NOT NULL,
+      to_address text[] NOT NULL DEFAULT '{}',
+      cc text[] NOT NULL DEFAULT '{}',
+      bcc text[] NOT NULL DEFAULT '{}',
+      reply_to text[] NOT NULL DEFAULT '{}',
+      subject text NOT NULL DEFAULT '',
+      text_body text NOT NULL DEFAULT '',
+      html_body text NOT NULL DEFAULT '',
+      headers jsonb NOT NULL DEFAULT '{}',
+      tags jsonb NOT NULL DEFAULT '[]',
+      attachments jsonb NOT NULL DEFAULT '[]',
+      status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sending', 'sent', 'delivered', 'failed', 'bounced', 'suppressed')),
+      error text,
+      provider text NOT NULL DEFAULT 'mock',
+      provider_message_id text,
+      sent_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS outbound_idempotency ON outbound_messages(workspace_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS outbound_messages_domain ON outbound_messages(domain, created_at DESC);
+    CREATE INDEX IF NOT EXISTS outbound_messages_status ON outbound_messages(status)
+      WHERE status IN ('queued', 'sending');
   `);
 }

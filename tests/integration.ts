@@ -5,14 +5,15 @@ import { chromium } from '@playwright/test';
 import { Resend } from 'resend';
 import { signedApplyUrl } from '../src/domain-connect.js';
 import { cloudflareToken, connectCloudflare, decryptSecret } from '../src/cloudflare.js';
-import { db, migrate } from '../src/db.js';
-import { importMail, parseNext, runJobs } from '../src/jobs.js';
 
 const origin='http://localhost:56314';
 const password='integration-secret-password';
 const sessionSecret='integration-session-secret-over-32';
 process.env.SESSION_SECRET=sessionSecret;
 process.env.DATABASE_URL=process.env.DATABASE_URL || 'postgres://postgres:letterdock_test@127.0.0.1:5432/postgres';
+
+const { db, migrate } = await import('../src/db.js');
+const { importMail, parseNext, runJobs } = await import('../src/jobs.js');
 const id=randomUUID();
 const domain='inbox.integration.example';
 const recipient='bcc+'+id.slice(0,8)+'@'+domain;

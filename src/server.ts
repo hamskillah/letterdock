@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cookies, { Signer } from '@fastify/cookie';
 import files from '@fastify/static';
+import scalar from '@scalar/fastify-api-reference';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { storage } from './storage.js';
 import { resolveMx, resolveTxt } from 'node:dns/promises';
@@ -12,6 +13,8 @@ import { connectCloudflare, connectionStatus, encryptSecret, domainSetup, SetupC
 import { db, migrate } from './db.js';
 import { importMail, deliver, runJobs, stagingStatus } from './jobs.js';
 import { workerPool } from './worker.js';
+import { openApiSpec } from './openapi.js';
+import { sendEmail, extractEmailAddress, addSuppression, removeSuppression, OutboundError } from './outbound.js';
 
 const app = Fastify({
   logger: true,
@@ -23,6 +26,19 @@ const app = Fastify({
 app.addContentTypeParser(['message/rfc822', 'application/octet-stream'], { parseAs: 'buffer' }, (_req, body, done) => {
   done(null, body);
 });
+
+app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+  const str = typeof body === 'string' ? body : body ? body.toString('utf8') : '';
+  if (!str || str.trim().length === 0) {
+    done(null, {});
+  } else {
+    try {
+      done(null, JSON.parse(str));
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  }
+});
 const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 const listenPort = Number(process.env.PORT || 3000);
@@ -31,24 +47,65 @@ if (!password || password.length < 16 || !secret || secret.length < 32) throw Er
 const signingKey = (purpose: string) => createHmac('sha256', secret).update('letterdock:'+purpose).digest();
 await app.register(cookies, { secret: signingKey('browser') });
 const downloads = new Signer(signingKey('downloads'));
-const apiScope = new WeakMap<object, {id:string;domain:string}>();
+const apiScope = new WeakMap<object, { id: string; domain: string | null; workspace_id: string }>();
 await app.register(files, { root: resolve('dist') });
+
+await app.register(scalar, {
+  routePrefix: '/docs',
+  configuration: {
+    content: openApiSpec
+  }
+});
+
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const safeName = (name: string) => "attachment; filename*=UTF-8''" + encodeURIComponent(name).replace(/['()]/g, '_');
 
 app.addHook('preHandler', async (req, res) => {
   const path = req.url.split('?')[0];
-  if (!path.startsWith('/api/') && !path.startsWith('/emails/receiving')) return;
-  res.header('Cache-Control', 'no-store');
-  if (path.startsWith('/emails/receiving')) {
+
+  // Public docs and OpenAPI schema
+  if (path === '/docs' || path.startsWith('/docs/') || path === '/api/openapi.json') {
+    return;
+  }
+
+  // Resend API endpoints (/emails, /domains, /api-keys)
+  if (path.startsWith('/emails') || path.startsWith('/domains') || path.startsWith('/api-keys')) {
+    res.header('Cache-Control', 'no-store');
     const auth = req.headers.authorization;
     if (auth?.startsWith('Bearer ')) {
-      const {rows:[key]}=await db.query('SELECT id,domain FROM api_keys WHERE hash=$1 AND domain IS NOT NULL',[digest(auth.slice(7))]);
-      if(key){apiScope.set(req,key);return;}
+      const { rows: [key] } = await db.query(
+        'SELECT id, domain, workspace_id FROM api_keys WHERE hash=$1',
+        [digest(auth.slice(7))]
+      );
+      if (key) {
+        apiScope.set(req, key);
+        return;
+      }
     }
-    return res.code(401).send({ name:'validation_error', statusCode:401, message:'Invalid API key' });
+    return res.code(401).send({ name: 'validation_error', statusCode: 401, message: 'Invalid API key' });
   }
+
+  // Public webhook endpoints for bounces & complaints
+  if (path.startsWith('/api/webhooks/')) {
+    return;
+  }
+
+  // Administrative APIs allow Bearer API keys as well as browser session
+  if (path.startsWith('/api/outbound/') || path.startsWith('/api/suppressions')) {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith('Bearer ')) {
+      const { rows: [key] } = await db.query(
+        'SELECT id, domain, workspace_id FROM api_keys WHERE hash=$1',
+        [digest(auth.slice(7))]
+      );
+      if (key) {
+        apiScope.set(req, key);
+        return;
+      }
+    }
+  }
+
   if (path.startsWith('/api/ingress/')) {
     const auth = req.headers.authorization;
     if (auth?.startsWith('Bearer ')) {
@@ -56,7 +113,7 @@ app.addHook('preHandler', async (req, res) => {
       if (process.env.INGRESS_KEY && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(digest(process.env.INGRESS_KEY)))) {
         return;
       }
-      const { rows: [key] } = await db.query('SELECT id, domain FROM api_keys WHERE hash=$1', [digest(token)]);
+      const { rows: [key] } = await db.query('SELECT id, domain, workspace_id FROM api_keys WHERE hash=$1', [digest(token)]);
       if (key) {
         apiScope.set(req, key);
         return;
@@ -64,12 +121,16 @@ app.addHook('preHandler', async (req, res) => {
     }
     return res.code(401).send({ ok: false, error: 'unauthorized', message: 'Invalid or missing Ingress authentication' });
   }
+
+  if (!path.startsWith('/api/')) return;
+  res.header('Cache-Control', 'no-store');
+
   if (!['GET','HEAD'].includes(req.method) && req.headers.origin !== publicOrigin) {
-    return res.code(403).send({ message:'Origin rejected' });
+    return res.code(403).send({ message: 'Origin rejected' });
   }
   if (path === '/api/login') return;
   const session = req.unsignCookie(req.cookies.session ?? '');
-  if (!session.valid || !session.value) return res.code(401).send({ message:'Sign in required' });
+  if (!session.valid || !session.value) return res.code(401).send({ message: 'Sign in required' });
 
   if (session.value.startsWith('session:')) {
     const sessionVal = session.value.slice(8);
@@ -631,6 +692,456 @@ app.get<{Params:{token:string}}>('/download/:token',async(req,res)=>{
   }
   if (!payload) return res.code(404).send();
   return res.header('Cache-Control','no-store').header('Content-Disposition',safeName(row.filename)).type(row.mime || 'application/octet-stream').send(payload);
+});
+
+// -------------------------------------------------------------
+// OpenAPI 3.1 Definition Endpoint
+// -------------------------------------------------------------
+app.get('/api/openapi.json', async () => openApiSpec);
+
+// -------------------------------------------------------------
+// Resend REST API Parity (Outbound Emails)
+// -------------------------------------------------------------
+app.post('/emails', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const body = req.body as any;
+
+  if (!body || typeof body !== 'object') {
+    return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Invalid email payload' });
+  }
+
+  if (scoped?.domain) {
+    try {
+      const fromParsed = extractEmailAddress(body.from || '');
+      if (fromParsed.domain !== scoped.domain) {
+        return res.code(403).send({
+          name: 'forbidden',
+          statusCode: 403,
+          message: `API key is restricted to domain '${scoped.domain}'. Cannot send from '${fromParsed.domain}'.`
+        });
+      }
+    } catch {
+      return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Invalid from address' });
+    }
+  }
+
+  const idempotencyKey = (req.headers['idempotency-key'] as string) || undefined;
+
+  try {
+    const result = await sendEmail({
+      workspaceId,
+      from: body.from,
+      to: body.to,
+      subject: body.subject,
+      html: body.html,
+      text: body.text,
+      cc: body.cc,
+      bcc: body.bcc,
+      replyTo: body.reply_to || body.replyTo,
+      headers: body.headers,
+      attachments: body.attachments,
+      tags: body.tags,
+      idempotencyKey
+    });
+
+    return res.code(200).send({ id: result.id });
+  } catch (err: any) {
+    if (err instanceof OutboundError) {
+      return res.code(err.statusCode).send({
+        name: err.name,
+        statusCode: err.statusCode,
+        message: err.message
+      });
+    }
+    return res.code(500).send({
+      name: 'internal_server_error',
+      statusCode: 500,
+      message: err.message || 'Failed to dispatch email'
+    });
+  }
+});
+
+app.post('/emails/batch', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const list = req.body as any[];
+
+  if (!Array.isArray(list) || list.length === 0) {
+    return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Batch payload must be a non-empty array' });
+  }
+
+  const results: Array<{ id: string }> = [];
+
+  for (const item of list) {
+    if (scoped?.domain) {
+      try {
+        const fromParsed = extractEmailAddress(item.from || '');
+        if (fromParsed.domain !== scoped.domain) {
+          return res.code(403).send({
+            name: 'forbidden',
+            statusCode: 403,
+            message: `API key is restricted to domain '${scoped.domain}'.`
+          });
+        }
+      } catch {
+        return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Invalid from address' });
+      }
+    }
+
+    try {
+      const result = await sendEmail({
+        workspaceId,
+        from: item.from,
+        to: item.to,
+        subject: item.subject,
+        html: item.html,
+        text: item.text,
+        cc: item.cc,
+        bcc: item.bcc,
+        replyTo: item.reply_to || item.replyTo,
+        headers: item.headers,
+        attachments: item.attachments,
+        tags: item.tags
+      });
+      results.push({ id: result.id });
+    } catch (err: any) {
+      if (err instanceof OutboundError) {
+        return res.code(err.statusCode).send({
+          name: err.name,
+          statusCode: err.statusCode,
+          message: err.message
+        });
+      }
+      return res.code(500).send({
+        name: 'internal_server_error',
+        statusCode: 500,
+        message: err.message || 'Batch item failed'
+      });
+    }
+  }
+
+  return res.code(200).send({ data: results });
+});
+
+app.get<{ Params: { id: string } }>('/emails/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!uuid.test(id)) {
+    return res.code(404).send(notFound('Email not found'));
+  }
+  const scoped = apiScope.get(req);
+
+  const { rows: [outRow] } = await db.query(
+    'SELECT * FROM outbound_messages WHERE id = $1',
+    [id]
+  );
+  if (outRow) {
+    if (scoped?.domain && outRow.domain !== scoped.domain) {
+      return res.code(404).send(notFound('Email not found'));
+    }
+    return {
+      object: 'email',
+      id: outRow.id,
+      to: outRow.to_address,
+      from: outRow.from_address,
+      created_at: outRow.created_at,
+      subject: outRow.subject,
+      html: outRow.html_body,
+      text: outRow.text_body,
+      bcc: outRow.bcc || [],
+      cc: outRow.cc || [],
+      reply_to: outRow.reply_to || [],
+      last_event: outRow.status
+    };
+  }
+
+  const { rows: [inRow] } = await db.query(
+    'SELECT id, domain, sender, recipient, subject, body, html, received FROM messages WHERE id = $1',
+    [id]
+  );
+  if (inRow) {
+    if (scoped?.domain && inRow.domain !== scoped.domain) {
+      return res.code(404).send(notFound('Email not found'));
+    }
+    return {
+      object: 'email',
+      id: inRow.id,
+      to: [inRow.recipient],
+      from: inRow.sender,
+      created_at: inRow.received,
+      subject: inRow.subject,
+      html: inRow.html,
+      text: inRow.body,
+      bcc: [],
+      cc: [],
+      reply_to: [],
+      last_event: 'delivered'
+    };
+  }
+
+  return res.code(404).send(notFound('Email not found'));
+});
+
+// -------------------------------------------------------------
+// Resend REST API Parity (Domains & API Keys)
+// -------------------------------------------------------------
+app.post('/domains', async (req, res) => {
+  const body = req.body as any;
+  const rawName = String(body?.name || '').trim().toLowerCase();
+  if (!rawName || !rawName.includes('.')) {
+    return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Valid domain name required' });
+  }
+
+  const { rows: [domain] } = await db.query(`
+    INSERT INTO domains (name, verified)
+    VALUES ($1, false)
+    ON CONFLICT (name) DO UPDATE SET removed_at = NULL
+    RETURNING name, token, verified, retention_days
+  `, [rawName]);
+
+  return res.code(201).send({
+    id: domain.name,
+    name: domain.name,
+    status: domain.verified ? 'verified' : 'not_started',
+    created_at: new Date().toISOString(),
+    region: body.region || 'us-east-1',
+    records: [
+      {
+        record: 'MX',
+        name: domain.name,
+        type: 'MX',
+        value: 'inbound.letterdock.com',
+        ttl: 'Auto',
+        status: domain.verified ? 'verified' : 'not_started',
+        priority: 10
+      },
+      {
+        record: 'TXT',
+        name: domain.name,
+        type: 'TXT',
+        value: 'v=spf1 include:letterdock.com ~all',
+        ttl: 'Auto',
+        status: domain.verified ? 'verified' : 'not_started'
+      }
+    ]
+  });
+});
+
+app.get('/domains', async (req) => {
+  const scoped = apiScope.get(req);
+  const { rows } = await db.query(
+    'SELECT name, token, verified FROM domains WHERE removed_at IS NULL ' +
+    (scoped?.domain ? 'AND name = $1 ' : '') +
+    'ORDER BY name ASC',
+    scoped?.domain ? [scoped.domain] : []
+  );
+
+  return {
+    data: rows.map(r => ({
+      id: r.name,
+      name: r.name,
+      status: r.verified ? 'verified' : 'not_started',
+      created_at: new Date().toISOString(),
+      region: 'us-east-1'
+    }))
+  };
+});
+
+app.get<{ Params: { id: string } }>('/domains/:id', async (req, res) => {
+  const { id } = req.params;
+  const { rows: [domain] } = await db.query(
+    'SELECT name, token, verified FROM domains WHERE (name = $1 OR token::text = $1) AND removed_at IS NULL LIMIT 1',
+    [id]
+  );
+  if (!domain) return res.code(404).send(notFound('Domain not found'));
+
+  return {
+    id: domain.name,
+    name: domain.name,
+    status: domain.verified ? 'verified' : 'not_started',
+    created_at: new Date().toISOString(),
+    region: 'us-east-1',
+    records: [
+      {
+        record: 'MX',
+        name: domain.name,
+        type: 'MX',
+        value: 'inbound.letterdock.com',
+        ttl: 'Auto',
+        status: domain.verified ? 'verified' : 'not_started',
+        priority: 10
+      },
+      {
+        record: 'TXT',
+        name: domain.name,
+        type: 'TXT',
+        value: 'v=spf1 include:letterdock.com ~all',
+        ttl: 'Auto',
+        status: domain.verified ? 'verified' : 'not_started'
+      }
+    ]
+  };
+});
+
+app.post<{ Params: { id: string } }>('/domains/:id/verify', async (req, res) => {
+  const { id } = req.params;
+  const { rows: [domain] } = await db.query(
+    'SELECT name, verified FROM domains WHERE (name = $1 OR token::text = $1) AND removed_at IS NULL LIMIT 1',
+    [id]
+  );
+  if (!domain) return res.code(404).send(notFound('Domain not found'));
+
+  return {
+    object: 'domain',
+    id: domain.name,
+    status: domain.verified ? 'verified' : 'not_started'
+  };
+});
+
+app.post('/api-keys', async (req, res) => {
+  const body = req.body as any;
+  const name = String(body?.name || 'API Key').slice(0, 120);
+  const domain = body?.domain || body?.domain_id || null;
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+
+  if (domain) {
+    const { rows: [d] } = await db.query(
+      'SELECT name FROM domains WHERE name = $1 AND verified AND removed_at IS NULL',
+      [domain]
+    );
+    if (!d) {
+      return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Domain must be verified' });
+    }
+  }
+
+  const rawToken = 're_' + randomBytes(32).toString('hex');
+  const tokenHash = digest(rawToken);
+
+  const { rows: [keyRow] } = await db.query(`
+    INSERT INTO api_keys (name, hash, domain, workspace_id)
+    VALUES ($1, $2, $3, $4)
+    RETURNING id, name, created_at
+  `, [name, tokenHash, domain, workspaceId]);
+
+  return res.code(201).send({
+    id: keyRow.id,
+    name: keyRow.name,
+    token: rawToken,
+    created_at: keyRow.created_at
+  });
+});
+
+app.get('/api-keys', async (req) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { rows } = await db.query(
+    'SELECT id, name, created_at FROM api_keys WHERE workspace_id = $1 ORDER BY created_at DESC',
+    [workspaceId]
+  );
+  return {
+    data: rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      created_at: r.created_at
+    }))
+  };
+});
+
+app.delete<{ Params: { id: string } }>('/api-keys/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!uuid.test(id)) {
+    return res.code(404).send(notFound('API key not found'));
+  }
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+
+  const resDel = await db.query(
+    'DELETE FROM api_keys WHERE id = $1 AND workspace_id = $2',
+    [id, workspaceId]
+  );
+  if (!resDel.rowCount) {
+    return res.code(404).send(notFound('API key not found'));
+  }
+  return {
+    object: 'api_key',
+    id,
+    deleted: true
+  };
+});
+
+// -------------------------------------------------------------
+// Outbound Relay Profiles & Abuse Suppression APIs
+// -------------------------------------------------------------
+app.get('/api/outbound/profiles', async () => {
+  const { rows } = await db.query(
+    'SELECT id, workspace_id, domain, provider, from_name, from_email, is_default, created_at, updated_at FROM outbound_profiles ORDER BY domain ASC'
+  );
+  return { profiles: rows };
+});
+
+app.post<{ Body: { domain: string; provider: 'smtp' | 'resend' | 'ses' | 'brevo' | 'mock'; credentials?: any; from_name?: string; from_email?: string; is_default?: boolean } }>('/api/outbound/profiles', async (req, res) => {
+  const { domain, provider, credentials, from_name = '', from_email = '', is_default = true } = req.body || {};
+  if (!domain || !provider) {
+    return res.code(400).send({ message: 'domain and provider are required' });
+  }
+  const encryptedCreds = encryptSecret(JSON.stringify(credentials || {}), 'outbound');
+
+  await db.query(`
+    INSERT INTO outbound_profiles (domain, provider, credentials_encrypted, from_name, from_email, is_default)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT (workspace_id, domain) DO UPDATE
+    SET provider = EXCLUDED.provider,
+        credentials_encrypted = EXCLUDED.credentials_encrypted,
+        from_name = EXCLUDED.from_name,
+        from_email = EXCLUDED.from_email,
+        is_default = EXCLUDED.is_default,
+        updated_at = now()
+  `, [domain, provider, encryptedCreds, from_name, from_email, is_default]);
+
+  return { ok: true };
+});
+
+app.delete<{ Params: { domain: string } }>('/api/outbound/profiles/:domain', async (req) => {
+  await db.query('DELETE FROM outbound_profiles WHERE domain = $1', [req.params.domain]);
+  return { ok: true };
+});
+
+app.get('/api/suppressions', async () => {
+  const { rows } = await db.query('SELECT id, email, domain, reason, details, created_at FROM suppressions ORDER BY created_at DESC LIMIT 500');
+  return { suppressions: rows };
+});
+
+app.post<{ Body: { email: string; reason?: 'bounce' | 'complaint' | 'manual'; details?: string; domain?: string } }>('/api/suppressions', async (req, res) => {
+  const { email, reason = 'manual', details = '', domain } = req.body || {};
+  if (!email || !email.includes('@')) {
+    return res.code(400).send({ message: 'Valid email address required' });
+  }
+  await addSuppression('default', email, reason, details, domain);
+  return { ok: true };
+});
+
+app.delete<{ Params: { email: string } }>('/api/suppressions/:email', async (req) => {
+  const deleted = await removeSuppression('default', req.params.email);
+  return { ok: true, deleted };
+});
+
+app.post<{ Body: { email: string; reason?: string; details?: string; domain?: string } }>('/api/webhooks/bounces', async (req, res) => {
+  const { email, reason = 'hard_bounce', details = '', domain } = req.body || {};
+  if (!email || !email.includes('@')) {
+    return res.code(400).send({ ok: false, message: 'Valid email address required' });
+  }
+  await addSuppression('default', email, 'bounce', details || reason, domain);
+  return { ok: true, suppressed: true };
+});
+
+app.post<{ Body: { email: string; details?: string; domain?: string } }>('/api/webhooks/complaints', async (req, res) => {
+  const { email, details = '', domain } = req.body || {};
+  if (!email || !email.includes('@')) {
+    return res.code(400).send({ ok: false, message: 'Valid email address required' });
+  }
+  await addSuppression('default', email, 'complaint', details || 'spam complaint', domain);
+  return { ok: true, suppressed: true };
 });
 
 await migrate();

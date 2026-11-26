@@ -39,6 +39,11 @@ export class WorkerPool {
       const limit = typeof job.payload?.limit === 'number' ? job.payload.limit : 25;
       await migrateLegacyStorage(limit);
     });
+
+    this.registerHandler('send_email', async (job) => {
+      const { sendEmail } = await import('./outbound.js');
+      await sendEmail(job.payload);
+    });
   }
 
   public registerHandler<T = any>(jobType: string, handler: JobHandler<T>) {
