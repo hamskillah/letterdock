@@ -35,9 +35,14 @@ independent values for `SESSION_SECRET` and `POSTGRES_PASSWORD` with
 `openssl rand -hex 32`. Keep the session secret with your backups. It also
 protects stored Cloudflare credentials and webhook secrets.
 
+For a new standalone installation, build and start the services:
+
 ```sh
 docker compose up -d --build
 ```
+
+For an automated production deployment, follow the
+[production deployment and recovery guide](docs/deployment.md) instead.
 
 Open **http://localhost:3000** and sign in with the password you set. Use
 `main` for the current preview, including security fixes. The
@@ -172,6 +177,9 @@ Restore into an empty database with the same owner. Before upgrading, retain
 a backup and the previous image. After upgrading, check **Health** and verify
 external delivery to a new address. Existing managed Workers can be refreshed
 using the same Compose files as the deployment.
+
+For the automated deployment procedure, failure handling, and its limitations,
+see [Production deployment and recovery](docs/deployment.md).
 
 <details>
 <summary>Refresh a managed Cloudflare Worker</summary>

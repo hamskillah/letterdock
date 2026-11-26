@@ -26,7 +26,51 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: python3 tests/deploy_release_test.py
+      - run: python3 tests/deploy_compose_lifecycle_test.py
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm test
       - run: docker build -t letterdock:ci .
+
+  deploy:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: letterdock-production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH to deploy host
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+
+      - name: Stage isolated candidate and deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          # Restrict values used in the remote shell command and rsync destination.
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9_./-]+$ && "$DEPLOY_PATH" != *..* && "$DEPLOY_PATH" != */ ]]
+          candidate="${DEPLOY_PATH}.releases/$RUN"
+          host="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh_opts=(-i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes)
+          ssh "${ssh_opts[@]}" "$host" "mkdir -p '${DEPLOY_PATH}.releases' && mkdir '$candidate'"
+          rsync -az -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes" \
+            --exclude '.git/' --exclude 'node_modules/' --exclude '.env' \
+            --exclude 'postgres-data/' --exclude 'database/' ./ "$host:$candidate/"
+          printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$host" \
+            "bash '$candidate/deploy/release.sh' '$DEPLOY_PATH' '$candidate' '$SHA' '$REPOSITORY' '$RUN'"
