@@ -149,6 +149,13 @@ export function App() {
   const searchInput = useRef<HTMLInputElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null);
   const closeMenuButton = useRef<HTMLButtonElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (authorized && workspaceRef.current) {
+      workspaceRef.current.focus({ preventScroll: true });
+    }
+  }, [page, authorized]);
 
   useEffect(() => {
     if (!mobileNav) return;
@@ -853,7 +860,7 @@ export function App() {
         }
       />
 
-      <main className="workspace" inert={mobileNav || undefined}>
+      <main ref={workspaceRef} tabIndex={-1} className="workspace" inert={mobileNav || undefined}>
         <Header
           page={page}
           heading={heading}

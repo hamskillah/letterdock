@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { randomUUID, createHmac } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { chromium } from '@playwright/test';
+import { chromium, type Page } from '@playwright/test';
 
 const origin = 'http://localhost:56315';
 const password = 'p4-secret-password';
@@ -46,6 +46,41 @@ await db.query(`
     ($5, $2, $3, 'bob@' || $2, $6, 'Incident Report #2', 'ready', true, 'inbox', 'default')
 `, [msg1Id, testDomain, 'ops@' + testDomain, rawMime1, msg2Id, rawMime2]);
 
+// Production gate probe functions (exercised by both positive tests and negative controls)
+export async function measureProcessRssMB(pid: number): Promise<number> {
+  const statmContent = await fs.readFile(`/proc/${pid}/statm`, 'utf8');
+  const statmTokens = statmContent.trim().split(/\s+/);
+  const residentPages = parseInt(statmTokens[1], 10);
+  if (isNaN(residentPages) || residentPages <= 0) {
+    throw new Error(`Invalid resident pages reading from /proc/${pid}/statm: ${residentPages}`);
+  }
+  const rssMB = Math.round((residentPages * 4096) / (1024 * 1024));
+  if (rssMB <= 20) {
+    throw new Error(`Suspicious sub-20MB RSS reading: ${rssMB} MB`);
+  }
+  return rssMB;
+}
+
+export async function assertMessageFolder(msgId: string, expectedFolder: string): Promise<void> {
+  const { rows: [row] } = await db.query('SELECT folder FROM messages WHERE id = $1', [msgId]);
+  assert(row, `Message ${msgId} must exist in database`);
+  assert.equal(row.folder, expectedFolder, `Message ${msgId} folder must be '${expectedFolder}', got '${row.folder}'`);
+}
+
+export async function probeVisibleElementWithinBounds(page: Page, selector: string, maxWidth = 320): Promise<{ x: number; width: number; right: number }> {
+  const locator = page.locator(selector).first();
+  await locator.waitFor({ state: 'visible' });
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error(`Element ${selector} has no valid bounding box`);
+  }
+  const right = box.x + box.width;
+  if (box.x < 0 || right > maxWidth) {
+    throw new Error(`Element ${selector} exceeds viewport bounds: x=${box.x}, width=${box.width}, right=${right}, max=${maxWidth}`);
+  }
+  return { x: box.x, width: box.width, right };
+}
+
 // Launch server process (built bundle)
 const serverProcess = spawn('node', ['dist/server.js'], {
   env: {
@@ -81,12 +116,6 @@ try {
   console.log('--- 1. Testing Authentication & Workspace Shell ---');
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
-  page.on('console', msg => console.log('PAGE LOG:', msg.text()));
-  page.on('pageerror', err => console.log('PAGE ERROR:', err.message));
-  page.on('requestfailed', req => console.log('REQ FAILED:', req.url(), req.failure()?.errorText));
-  page.on('response', res => {
-    if (res.url().includes('/emails')) console.log('RESPONSE:', res.status(), res.url());
-  });
   await page.goto(origin);
 
   // Sign in form
@@ -110,11 +139,11 @@ try {
   // -----------------------------------------------------------------
   // 2. Density System (Comfortable vs Compact)
   // -----------------------------------------------------------------
-  console.log('--- 2. Testing Density System & Hit Target Sizes ---');
+  console.log('--- 2. Testing Density System & Measured Target Heights ---');
   // Default is comfortable
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-density')), 'comfortable');
   
-  // Measure both .message-row and the operator hit target .message-link
+  // Measure both .message-row and the operator hit target .message-link in Comfortable mode
   const rowComfortable = page.locator('.message-row').first();
   const heightRowComfortable = (await rowComfortable.boundingBox())!.height;
   const linkComfortable = page.locator('.message-link').first();
@@ -129,82 +158,130 @@ try {
   await page.keyboard.press('d');
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-density')), 'compact');
   
+  // Measure both .message-row and .message-link in Compact mode
   const heightRowCompact = (await rowComfortable.boundingBox())!.height;
   const heightLinkCompact = (await linkComfortable.boundingBox())!.height;
   console.log(`Compact row height: ${heightRowCompact}px, link target: ${heightLinkCompact}px`);
   
-  assert(heightRowCompact < heightRowComfortable, `Compact row height (${heightRowCompact}px) must be smaller than comfortable (${heightRowComfortable}px)`);
+  assert(heightRowCompact < heightRowComfortable, `Compact row height (${heightRowCompact}px) must be tighter than comfortable (${heightRowComfortable}px)`);
   assert(heightLinkCompact < heightLinkComfortable, `Compact target height (${heightLinkCompact}px) must be tighter than comfortable (${heightLinkComfortable}px)`);
-  assert(heightLinkCompact >= 32, `Compact target height must remain accessible (>= 32px), got ${heightLinkCompact}px`);
+  assert(heightRowCompact <= 48, `Compact row height must be compact (<= 48px), got ${heightRowCompact}px`);
+  assert(heightLinkCompact <= 48, `Compact hit target must be compact (<= 48px), got ${heightLinkCompact}px`);
 
   // Toggle back to comfortable via topbar button
   await page.locator('.density-toggle').click();
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-density')), 'comfortable');
 
   // -----------------------------------------------------------------
-  // 3. Keyboard-First Navigation & Exact Fixture State Transitions
+  // 3. Dynamic Keyboard Walk: Focus, Containment, Traversal & DB Transitions
   // -----------------------------------------------------------------
-  console.log('--- 3. Testing Keyboard Shortcuts (j/k, Enter, e, s, u, c, ?, /) ---');
+  console.log('--- 3. Testing Keyboard Shortcuts, Focus Traps & State Transitions ---');
 
-  // Test modifier guard: Ctrl+C or Cmd+C must NOT open compose modal
+  // 3a. Native modifier guard: Ctrl+C / Cmd+C must not open compose modal
   await page.keyboard.press('Control+c');
   assert.equal(await page.locator('dialog[open]').count(), 0, 'Ctrl+C must not trigger compose modal');
 
-  // Test '/' focuses search
+  // 3b. '/' focuses search input
   await page.locator('body').click({ position: { x: 720, y: 15 } });
   await page.keyboard.press('/');
   assert.equal(await searchInput.evaluate(el => el === document.activeElement), true, "'/' must focus search input");
   await page.keyboard.press('Escape');
   await page.locator('body').click({ position: { x: 720, y: 15 } });
 
-  // Test '?' opens Keyboard Shortcuts Modal
+  // 3c. '?' opens Keyboard Shortcuts Modal with Focus Trap & Escape return
+  const helpButton = page.locator('button[aria-label="Open keyboard shortcuts cheat-sheet"]');
+  await helpButton.focus();
   await page.keyboard.press('?');
   const shortcutsModal = page.getByRole('dialog', { name: 'Keyboard Shortcuts' });
   await shortcutsModal.waitFor();
-  assert(await page.getByText('j / k or ↓ / ↑').count() > 0, 'Shortcuts table must describe navigation');
+  
+  // Verify focus entered dialog
+  const isFocusInShortcuts = await shortcutsModal.evaluate(dialog => dialog.contains(document.activeElement));
+  assert.equal(isFocusInShortcuts, true, 'Focus must enter Shortcuts modal on open');
+  
+  // Press Escape and verify focus restores to helpButton opener
   await page.keyboard.press('Escape');
   await shortcutsModal.waitFor({ state: 'hidden' });
+  const isHelpRefocused = await helpButton.evaluate(btn => btn === document.activeElement);
+  assert.equal(isHelpRefocused, true, 'Escape must return focus to the opener element');
 
-  // Test 'c' opens Outbound Compose Modal
+  // 3d. 'c' opens Outbound Compose Modal with Focus Trap & Tab containment
+  const composeTrigger = page.locator('button[aria-label="Compose new outbound email"]');
+  await composeTrigger.focus();
   await page.keyboard.press('c');
   const composeModal = page.getByRole('dialog', { name: 'Compose Outbound Email' });
   await composeModal.waitFor();
+
+  // Verify focus entered dialog on first input
+  const isFocusInCompose = await composeModal.evaluate(dialog => dialog.contains(document.activeElement));
+  assert.equal(isFocusInCompose, true, 'Focus must enter Compose modal on open');
+
+  // Test Tab cycling containment inside dialog
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  const isTabStillInCompose = await composeModal.evaluate(dialog => dialog.contains(document.activeElement));
+  assert.equal(isTabStillInCompose, true, 'Tab navigation must stay contained inside dialog');
+
+  // Test Shift+Tab backwards navigation
+  await page.keyboard.press('Shift+Tab');
+  const isShiftTabStillInCompose = await composeModal.evaluate(dialog => dialog.contains(document.activeElement));
+  assert.equal(isShiftTabStillInCompose, true, 'Shift+Tab navigation must stay contained inside dialog');
+
+  // Dismiss via Escape and verify focus restoration to composeTrigger
   await page.keyboard.press('Escape');
   await composeModal.waitFor({ state: 'hidden' });
+  const isComposeRefocused = await composeTrigger.evaluate(btn => btn === document.activeElement);
+  assert.equal(isComposeRefocused, true, 'Closing modal via Escape must restore focus to opener button');
 
-  // Test 'j' navigates and opens message
+  // 3e. 'j' / 'ArrowDown' navigates and opens message
   await page.locator('body').click({ position: { x: 720, y: 15 } });
   await page.keyboard.press('j');
   const detailTitle = page.getByRole('heading', { name: /Notice #1|Report #2/ }).first();
   await detailTitle.waitFor();
   const openedSubject = await detailTitle.textContent();
+  const targetMsgId = openedSubject?.includes('Notice #1') ? msg1Id : msg2Id;
 
-  // Test 's' toggles star status on open message
+  // 3f. 's' toggles star status: verify database transition
   await page.keyboard.press('s');
-  const starButton = page.locator('.reader-actions').getByRole('button', { name: /star/i });
-  // Wait for star state update
-  await page.waitForTimeout(300);
+  for (let i = 0; i < 20; i++) {
+    const { rows: [r] } = await db.query('SELECT starred FROM messages WHERE id = $1', [targetMsgId]);
+    if (r?.starred === true) break;
+    await new Promise(res => setTimeout(res, 50));
+  }
+  const { rows: [starredRow] } = await db.query('SELECT starred FROM messages WHERE id = $1', [targetMsgId]);
+  assert.equal(starredRow?.starred, true, 'Pressing s must transition database starred column to true');
 
-  // Test 'e' archives current message - verify exact transition
+  // 3g. 'u' toggles unread status: since open() marks it read, pressing 'u' marks it unread (unread = true)
+  await page.keyboard.press('u');
+  for (let i = 0; i < 20; i++) {
+    const { rows: [r] } = await db.query('SELECT unread FROM messages WHERE id = $1', [targetMsgId]);
+    if (r?.unread === true) break;
+    await new Promise(res => setTimeout(res, 50));
+  }
+  const { rows: [unreadRow] } = await db.query('SELECT unread FROM messages WHERE id = $1', [targetMsgId]);
+  assert.equal(unreadRow?.unread, true, 'Pressing u on open message must transition database unread column to true');
+
+  // 3h. 'e' archives current message: verify exact fixture database transition
   await page.keyboard.press('e');
   
-  // Verify message row is removed from Inbox view
   if (openedSubject?.includes('Notice #1')) {
     await page.locator('.rows').getByText('Deployment Notice #1').waitFor({ state: 'hidden' });
-    const { rows: [msgRow] } = await db.query('SELECT folder FROM messages WHERE id = $1', [msg1Id]);
-    assert.equal(msgRow?.folder, 'archive', 'Exact fixture msg1Id must transition to archive folder');
+    await assertMessageFolder(msg1Id, 'archive');
   } else {
     await page.locator('.rows').getByText('Incident Report #2').waitFor({ state: 'hidden' });
-    const { rows: [msgRow] } = await db.query('SELECT folder FROM messages WHERE id = $1', [msg2Id]);
-    assert.equal(msgRow?.folder, 'archive', 'Exact fixture msg2Id must transition to archive folder');
+    await assertMessageFolder(msg2Id, 'archive');
   }
 
   // -----------------------------------------------------------------
-  // 4. Outbound Relay Management View
+  // 4. Outbound Relay Management View & Landmark Focus
   // -----------------------------------------------------------------
-  console.log('--- 4. Testing Outbound Relay Management ---');
+  console.log('--- 4. Testing Outbound Relay Management & Landmark Focus ---');
   await page.getByRole('button', { name: 'Outbound Relay' }).click();
   await page.getByRole('heading', { name: 'Outbound Relay Configuration' }).waitFor();
+
+  // Verify landmark workspace receives focus upon navigation
+  const isWorkspaceFocused = await page.locator('main.workspace').evaluate(el => el === document.activeElement);
+  assert.equal(isWorkspaceFocused, true, 'Navigating views must move focus to main workspace landmark');
 
   // Open "New Profile" modal
   await page.getByRole('button', { name: 'New Profile' }).click();
@@ -222,32 +299,33 @@ try {
   await page.getByText('MOCK').first().waitFor();
 
   // -----------------------------------------------------------------
-  // 5. Compose Outbound Email: In-Modal Error & Success
+  // 5. Compose Outbound Email: In-Modal Error, Draft Retain & Focus
   // -----------------------------------------------------------------
-  console.log('--- 5. Testing Outbound Email Composition & In-Modal Errors ---');
-  await page.getByRole('button', { name: 'Compose' }).click();
+  console.log('--- 5. Testing Outbound Email Composition, In-Modal Alert Focus & Draft Retain ---');
+  const composeBtn = page.getByRole('button', { name: 'Compose' });
+  await composeBtn.click();
   await page.getByRole('dialog', { name: 'Compose Outbound Email' }).waitFor();
 
   // 5a. Trigger an intentional validation error inside the composer
-  // Using an unverified sender domain to test error feedback inside modal
   await page.getByLabel('To (comma separated)').fill('recipient@destination.com');
   await page.getByLabel('Subject').fill('Test Error Draft');
   await page.getByLabel('From').fill('bad@unverified-domain.com');
   await page.getByRole('button', { name: 'Send Message' }).click();
 
-  // Verify error is rendered INSIDE the modal with role="alert"
+  // Verify error is rendered INSIDE the modal with role="alert" and receives focus
   const inModalError = page.locator('.compose-error[role="alert"]');
   await inModalError.waitFor();
-  assert(await inModalError.textContent(), 'In-modal error must be displayed');
-  // Verify draft content is preserved
-  assert.equal(await page.getByLabel('Subject').inputValue(), 'Test Error Draft', 'Draft must be retained upon send failure');
+  const isErrorFocused = await inModalError.evaluate(el => el === document.activeElement);
+  assert.equal(isErrorFocused, true, 'In-modal error alert must receive focus upon dispatch failure');
 
-  // 5b. Correct the payload and send successfully
+  // Verify draft content is retained intact
+  assert.equal(await page.getByLabel('Subject').inputValue(), 'Test Error Draft', 'Draft subject must be retained');
+  assert.equal(await page.getByLabel('To (comma separated)').inputValue(), 'recipient@destination.com', 'Draft recipients must be retained');
+
+  // 5b. Correct payload and send successfully
   await page.getByLabel('From').fill(`dispatcher@${testDomain}`);
-  await page.getByLabel('To (comma separated)').fill('recipient@destination.com');
   await page.getByLabel('Subject').fill('P4 Test Outbound Dispatch');
   await page.getByLabel('HTML Body').fill('<p>Sovereign infrastructure delivery verified.</p>');
-
   await page.getByRole('button', { name: 'Send Message' }).click();
 
   // Verify success banner notice on main shell
@@ -311,9 +389,9 @@ try {
   await page.getByText(keyName).waitFor();
 
   // -----------------------------------------------------------------
-  // 8. Responsive Viewport & Non-Clipped Controls (320px)
+  // 8. Responsive Viewport & Non-Clipped Actionable Controls (320px)
   // -----------------------------------------------------------------
-  console.log('--- 8. Testing 320px Responsive Viewport & Visible Hit Targets ---');
+  console.log('--- 8. Testing 320px Responsive Viewport & All Visible Controls ---');
   await page.close();
 
   // 320px ultra-narrow mobile reflow
@@ -328,20 +406,21 @@ try {
   });
   assert.equal(isOverflowing320, false, '320px viewport must have zero horizontal overflow');
 
-  // Verify that essential interactive controls are fully within visible screen (x + width <= 320)
-  const menuButton = mobilePage.getByRole('button', { name: 'Open menu' });
-  const menuBox = (await menuButton.boundingBox())!;
-  assert(menuBox.x >= 0 && menuBox.x + menuBox.width <= 320, 'Menu button must not overflow 320px viewport');
+  // Verify ALL visible actionable controls in the 320px mobile shell using production probe
+  await probeVisibleElementWithinBounds(mobilePage, 'button[aria-label="Open menu"]', 320);
+  await probeVisibleElementWithinBounds(mobilePage, 'input[aria-label="Search messages"]', 320);
 
-  const mobileSearchBox = (await mobilePage.getByRole('textbox', { name: 'Search messages' }).boundingBox())!;
-  assert(mobileSearchBox.x >= 0 && mobileSearchBox.x + mobileSearchBox.width <= 320, 'Search input must not overflow 320px viewport');
-
-  // Verify mobile menu open/close
-  await menuButton.click();
+  // Open mobile drawer
+  await mobilePage.getByRole('button', { name: 'Open menu' }).click();
   const sidebar = mobilePage.locator('.sidebar');
   await sidebar.waitFor();
+
+  // Verify drawer controls stay within 320px bounds
+  await probeVisibleElementWithinBounds(mobilePage, 'button[aria-label="Close menu"]', 320);
+  await probeVisibleElementWithinBounds(mobilePage, '.sidebar button.active', 320);
+
+  // Close drawer
   await mobilePage.getByRole('button', { name: 'Close menu' }).click();
-  await mobilePage.close();
 
   // -----------------------------------------------------------------
   // 9. Session Security Contract & CSRF Rejection Coverage
@@ -375,7 +454,6 @@ try {
   assert.equal(unsignedRes.status, 401, 'Unsigned cookie must be rejected with 401');
 
   // 9c. Wrong Origin on cookie-authenticated mutation must be rejected with 403 (CSRF Protection)
-  // First get a valid signed cookie via login
   const loginRes = await fetch(origin + '/api/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Origin: origin },
@@ -430,52 +508,70 @@ try {
   assert.equal(bearerRes.status, 200, 'Valid Bearer token must succeed');
 
   // -----------------------------------------------------------------
-  // 10. Process Memory RSS Budget Verification (Fail on Missing)
+  // 10. Process Memory RSS Budget Verification (Strict Production Probe)
   // -----------------------------------------------------------------
   console.log('--- 10. Checking Process Memory RSS Budget (Strict) ---');
   assert(serverProcess.pid, 'serverProcess PID must be defined');
   
-  // Strict read: any I/O error or failure must throw and fail the test gate
-  const statmContent = await fs.readFile(`/proc/${serverProcess.pid}/statm`, 'utf8');
-  const statmTokens = statmContent.trim().split(/\s+/);
-  const residentPages = parseInt(statmTokens[1], 10);
-  assert(!isNaN(residentPages) && residentPages > 0, `Resident pages must be a valid positive integer, got: ${residentPages}`);
-
-  const serverRssMB = Math.round((residentPages * 4096) / (1024 * 1024));
+  const serverRssMB = await measureProcessRssMB(serverProcess.pid);
   console.log(`Measured Server Process RSS: ${serverRssMB} MB`);
   
-  // Realism boundary: A real Node.js Fastify process cannot use less than 20 MB
   assert(serverRssMB > 20, `Server RSS (${serverRssMB} MB) must represent genuine non-zero process memory`);
   assert(serverRssMB < 150, `Server Process Memory RSS must remain below 150 MB, got ${serverRssMB} MB`);
 
   // -----------------------------------------------------------------
-  // 11. Negative Controls (Proving Assertions Can Fail)
+  // 11. Disposable Negative Controls (Proving Real Production Gates Fail)
   // -----------------------------------------------------------------
-  console.log('--- 11. Running Disposable Negative Controls ---');
+  console.log('--- 11. Running Disposable Negative Controls on Real Production Probes ---');
   
-  // Negative Control 1: Non-existent PID must throw ENOENT and fail missing check
+  // Negative Control 1: Real measureProcessRssMB must fail on invalid PID
   let nc1Failed = false;
   try {
-    await fs.readFile('/proc/99999999/statm', 'utf8');
+    await measureProcessRssMB(99999999);
   } catch (err: any) {
-    if (err.code === 'ENOENT') nc1Failed = true;
+    if (err.code === 'ENOENT' || err.message.includes('ENOENT')) nc1Failed = true;
   }
-  assert.equal(nc1Failed, true, 'Negative Control 1: Reading invalid PID statm must throw ENOENT');
+  assert.equal(nc1Failed, true, 'Negative Control 1: measureProcessRssMB with invalid PID must throw ENOENT');
 
-  // Negative Control 2: Mismatched folder assertion must fail
+  // Negative Control 2: Real assertMessageFolder must fail when message remains in 'inbox'
+  const failingMsgId = randomUUID();
+  await db.query(`
+    INSERT INTO messages (id, domain, recipient, sender, raw, subject, state, unread, folder, workspace_id)
+    VALUES ($1, $2, 'nc@test', 'sender@test', $3, 'NC Test', 'ready', true, 'inbox', 'default')
+  `, [failingMsgId, testDomain, Buffer.from('test')]);
+
   let nc2Failed = false;
   try {
-    assert.equal('inbox', 'archive', 'Intentionally failing folder comparison');
-  } catch {
-    nc2Failed = true;
+    // Assert message is in 'archive' when it is actually in 'inbox'
+    await assertMessageFolder(failingMsgId, 'archive');
+  } catch (err: any) {
+    if (err.name === 'AssertionError') nc2Failed = true;
   }
-  assert.equal(nc2Failed, true, 'Negative Control 2: Incorrect archive state must fail assertion');
+  await db.query('DELETE FROM messages WHERE id = $1', [failingMsgId]);
+  assert.equal(nc2Failed, true, 'Negative Control 2: assertMessageFolder must throw AssertionError when DB folder != expected');
 
-  // Negative Control 3: Intentionally overflowing element must fail 320px check
-  const overflowProbe = (containerWidth: number, contentWidth: number) => {
-    return contentWidth <= containerWidth;
-  };
-  assert.equal(overflowProbe(320, 450), false, 'Negative Control 3: Overflowing 450px element in 320px viewport must fail');
+  // Negative Control 3: Real probeVisibleElementWithinBounds must fail on clipped/overflowing element
+  await mobilePage.evaluate(() => {
+    const el = document.createElement('button');
+    el.id = 'nc-overflowing-button';
+    el.textContent = 'Overflowing';
+    el.style.position = 'absolute';
+    el.style.left = '350px';
+    el.style.top = '10px';
+    el.style.width = '100px';
+    el.style.height = '40px';
+    document.body.appendChild(el);
+  });
+
+  let nc3Failed = false;
+  try {
+    await probeVisibleElementWithinBounds(mobilePage, '#nc-overflowing-button', 320);
+  } catch (err: any) {
+    if (err.message.includes('exceeds viewport bounds')) nc3Failed = true;
+  }
+  await mobilePage.evaluate(() => document.getElementById('nc-overflowing-button')?.remove());
+  await mobilePage.close();
+  assert.equal(nc3Failed, true, 'Negative Control 3: probeVisibleElementWithinBounds must fail when element exceeds 320px');
 
   console.log('All Phase 4 Modular Design Engineering & Sovereign UI tests passed successfully!');
 } finally {

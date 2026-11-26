@@ -29,6 +29,7 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
   const [htmlBody, setHtmlBody] = useState('');
   const [sending, setSending] = useState(false);
   const [formError, setFormError] = useState('');
+  const errorRef = React.useRef<HTMLDivElement>(null);
 
   // Update defaultFrom if not set
   React.useEffect(() => {
@@ -42,6 +43,12 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
       setFormError('');
     }
   }, [isOpen]);
+
+  React.useEffect(() => {
+    if (formError && errorRef.current) {
+      errorRef.current.focus();
+    }
+  }, [formError]);
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -114,6 +121,8 @@ export const ComposeModal: React.FC<ComposeModalProps> = ({
       <form onSubmit={handleSend} className="settings-form compose-form">
         {formError && (
           <div
+            ref={errorRef}
+            tabIndex={-1}
             className="banner error compose-error"
             role="alert"
             style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
