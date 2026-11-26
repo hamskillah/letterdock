@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { db, migrate } from '../src/db.js';
-import { storage } from '../src/storage.js';
-import { importMail, parseNext, migrateLegacyStorage } from '../src/jobs.js';
 
 const origin = 'http://localhost:56320';
 const password = 'integration-secret-password-16chars';
 const sessionSecret = 'integration-session-secret-over-32chars';
 process.env.SESSION_SECRET = sessionSecret;
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:letterdock_test@127.0.0.1:5432/postgres';
+
+const { db, migrate } = await import('../src/db.js');
+const { storage } = await import('../src/storage.js');
+const { importMail, parseNext, migrateLegacyStorage } = await import('../src/jobs.js');
 
 await migrate();
 

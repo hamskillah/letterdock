@@ -25,7 +25,9 @@ export interface BlobStorage {
 
 function sanitizeKey(key: string): string {
   const normalized = key.replace(/\\/g, '/').replace(/^\/+/, '');
-  if (normalized.includes('..') || !/^[a-zA-Z0-9_\-\.\/]+$/.test(normalized)) {
+  const segments = normalized.split('/');
+  // Disallow empty segments, relative traversal navigation, and illegal characters
+  if (segments.some(s => s === '..' || s === '.' || s === '') || !/^[a-zA-Z0-9_\-\.\/]+$/.test(normalized)) {
     throw new Error('Invalid storage key: ' + key);
   }
   return normalized;
@@ -41,14 +43,16 @@ export class LocalStorageDriver implements BlobStorage {
   private filePath(key: string): string {
     const safeKey = sanitizeKey(key);
     const target = resolve(this.baseDir, safeKey);
-    if (!target.startsWith(this.baseDir)) {
+    const sep = resolve('/').slice(-1);
+    if (target !== this.baseDir && !target.startsWith(this.baseDir + sep)) {
       throw new Error('Storage path traversal detected');
     }
     return target;
   }
 
   async put(key: string, data: Buffer, _options?: { contentType?: string }): Promise<StoragePutResult> {
-    const targetPath = this.filePath(key);
+    const safeKey = sanitizeKey(key);
+    const targetPath = this.filePath(safeKey);
     await mkdir(dirname(targetPath), { recursive: true });
 
     const tempPath = targetPath + '.' + randomUUID() + '.tmp';
@@ -56,7 +60,7 @@ export class LocalStorageDriver implements BlobStorage {
     await rename(tempPath, targetPath);
 
     return {
-      key,
+      key: safeKey,
       size: data.length,
       sha256: sha256(data)
     };

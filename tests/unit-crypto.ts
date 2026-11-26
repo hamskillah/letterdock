@@ -17,7 +17,7 @@ const legacyEncoded = [iv.toString('base64'), cipher.getAuthTag().toString('base
 const decryptedLegacy = decryptSecret(legacyEncoded, legacyPurpose);
 assert.equal(decryptedLegacy, legacySecretVal, 'Legacy secret should decrypt correctly');
 
-// 2. Test new encryption without APP_ENCRYPTION_KEY (fallback mode)
+// 2. Test new encryption without APP_ENCRYPTION_KEY (fallback mode under SESSION_SECRET)
 const fallbackEnc = encryptSecret('fallback-value', 'test-purpose');
 assert(fallbackEnc.startsWith('v1.'), 'New encryption must start with v1.');
 assert.equal(decryptSecret(fallbackEnc, 'test-purpose'), 'fallback-value');
@@ -31,7 +31,16 @@ assert.equal(decryptSecret(modernEnc, 'modern-purpose'), 'modern-value-456');
 // 4. Ensure legacy still decrypts even when APP_ENCRYPTION_KEY is set
 assert.equal(decryptSecret(legacyEncoded, legacyPurpose), legacySecretVal, 'Legacy secret must still decrypt when APP_ENCRYPTION_KEY is active');
 
-// 5. Test sha256 helper
+// 5. Ensure v1 secret encrypted under SESSION_SECRET still decrypts after APP_ENCRYPTION_KEY is configured
+assert.equal(decryptSecret(fallbackEnc, 'test-purpose'), 'fallback-value', 'v1 secret encrypted under SESSION_SECRET fallback must still decrypt');
+
+// 6. Test with 64-char non-hex ASCII passphrase (ensures no zero-entropy IKM bug)
+process.env.APP_ENCRYPTION_KEY = 'non-hex-ascii-secret-key-that-is-strictly-sixty-four-characters!';
+assert.equal(process.env.APP_ENCRYPTION_KEY.length, 64);
+const asciiEnc = encryptSecret('ascii-content', 'ascii-purpose');
+assert.equal(decryptSecret(asciiEnc, 'ascii-purpose'), 'ascii-content');
+
+// 7. Test sha256 helper
 assert.equal(sha256('hello'), '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
 
 console.log('All crypto tests passed successfully!');

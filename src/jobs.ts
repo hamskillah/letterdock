@@ -181,7 +181,9 @@ export async function parseNext() {
       [id, parsed.subject ?? '', parsed.text ?? '', html, JSON.stringify(Object.fromEntries(parsed.headers)), parsed.messageId ?? null]);
     for (const attachment of parsed.attachments) {
       const attId = randomUUID();
-      const safeName = (attachment.filename ?? 'attachment').replace(/[^a-zA-Z0-9_.-]/g, '_');
+      const safeName = (attachment.filename ?? 'attachment')
+        .replace(/[^a-zA-Z0-9_.-]/g, '_')
+        .replace(/\.{2,}/g, '_');
       const attKey = 'attachments/' + id + '/' + attId + '-' + safeName;
       const attBuf = Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.from(attachment.content);
       const stored = await storage.put(attKey, attBuf, { contentType: attachment.contentType });
@@ -316,7 +318,9 @@ export async function runJobs() {
   await Promise.allSettled([
     pull().catch(error => { stagingStatus.error = true; continuation = undefined; workerCursor = null; throw error; }),
     (async () => { for (let n=0; n<25 && await parseNext(); n++) { /* drain bounded batch */ } })(),
+    migrateLegacyStorage(10),
     db.query("DELETE FROM ingest_log WHERE time < now()-interval '30 days' AND status <> 'stored'"),
+    db.query("DELETE FROM sessions WHERE expires_at < now()"),
     db.query(`DELETE FROM deliveries WHERE id IN (
       SELECT id FROM deliveries WHERE message_removed_at<now()-interval '30 days' LIMIT 100
     )`),
@@ -336,7 +340,9 @@ export async function migrateLegacyStorage(limit = 50): Promise<{ migratedAttach
     [limit]
   );
   for (const att of atts) {
-    const safeName = (att.filename ?? 'attachment').replace(/[^a-zA-Z0-9_.-]/g, '_');
+    const safeName = (att.filename ?? 'attachment')
+      .replace(/[^a-zA-Z0-9_.-]/g, '_')
+      .replace(/\.{2,}/g, '_');
     const attKey = 'attachments/' + att.message + '/' + att.id + '-' + safeName;
     const attBuf = Buffer.isBuffer(att.data) ? att.data : Buffer.from(att.data);
     const stored = await storage.put(attKey, attBuf, { contentType: att.mime });

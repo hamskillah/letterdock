@@ -14,22 +14,33 @@ try {
   assert.equal(res.size, content.length);
   assert.equal(res.sha256, '345ac091d88c1c32d16f964ebaf36444fc4adcb76ed4e86d8c48447fc81b7956');
 
-  // 2. Exists
+  // 2. Put object with consecutive dots in filename
+  const dotRes = await driver.put('mail/attachments/report..final..2026.pdf', Buffer.from('dot-content'));
+  assert.equal(dotRes.key, 'mail/attachments/report..final..2026.pdf');
+  const dotGet = await driver.get('mail/attachments/report..final..2026.pdf');
+  assert(dotGet !== null);
+  assert.equal(dotGet.data.toString(), 'dot-content');
+
+  // 3. Exists
   assert.equal(await driver.exists('mail/attachments/receipt.pdf'), true);
   assert.equal(await driver.exists('mail/non-existent.pdf'), false);
 
-  // 3. Get object
+  // 4. Get object
   const retrieved = await driver.get('mail/attachments/receipt.pdf');
   assert(retrieved !== null);
   assert.equal(retrieved.data.toString(), 'hello letterdock blob storage');
   assert.equal(retrieved.size, content.length);
 
-  // 4. Path traversal protection
+  // 5. Path traversal protection
   await assert.rejects(async () => {
     await driver.put('../escaped.txt', Buffer.from('bad'));
   }, /Storage path traversal|Invalid storage key/);
 
-  // 5. Delete object
+  await assert.rejects(async () => {
+    await driver.put('mail/attachments/../../escaped.txt', Buffer.from('bad'));
+  }, /Storage path traversal|Invalid storage key/);
+
+  // 6. Delete object
   await driver.delete('mail/attachments/receipt.pdf');
   assert.equal(await driver.exists('mail/attachments/receipt.pdf'), false);
   assert.equal(await driver.get('mail/attachments/receipt.pdf'), null);

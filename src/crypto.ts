@@ -1,12 +1,14 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, hkdfSync } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, hkdfSync } from 'node:crypto';
 
 let warnedMissingKey = false;
 
 export function getEncryptionKey(purpose: string): Buffer {
   const customKey = process.env.APP_ENCRYPTION_KEY;
   if (customKey && customKey.trim().length >= 32) {
-    // HKDF to derive 32-byte key for specific purpose
-    const ikm = Buffer.from(customKey.trim(), customKey.trim().length === 64 ? 'hex' : 'utf8');
+    const trimmed = customKey.trim();
+    // Only parse as hex if it strictly matches 64 hex characters (32 bytes)
+    const isHex64 = /^[0-9a-fA-F]{64}$/.test(trimmed);
+    const ikm = Buffer.from(trimmed, isHex64 ? 'hex' : 'utf8');
     return Buffer.from(hkdfSync('sha256', ikm, 'letterdock-salt', 'letterdock:' + purpose, 32));
   }
 
@@ -56,9 +58,21 @@ export function decryptSecret(encoded: string, purpose: string): string {
     const encrypted = Buffer.from(dataB64, 'base64');
     const key = getEncryptionKey(purpose);
 
-    const decipher = createDecipheriv('aes-256-gcm', key, iv);
-    decipher.setAuthTag(tag);
-    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+    try {
+      const decipher = createDecipheriv('aes-256-gcm', key, iv);
+      decipher.setAuthTag(tag);
+      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+    } catch (err) {
+      // If primary key fails and SESSION_SECRET is available, attempt fallback decryption
+      // for v1 tokens created when APP_ENCRYPTION_KEY was not yet configured
+      if (process.env.APP_ENCRYPTION_KEY && process.env.SESSION_SECRET) {
+        const fallbackKey = createHash('sha256').update('letterdock-' + purpose + ':' + process.env.SESSION_SECRET).digest();
+        const fallbackDecipher = createDecipheriv('aes-256-gcm', fallbackKey, iv);
+        fallbackDecipher.setAuthTag(tag);
+        return Buffer.concat([fallbackDecipher.update(encrypted), fallbackDecipher.final()]).toString('utf8');
+      }
+      throw err;
+    }
   }
 
   if (parts.length === 3) {
