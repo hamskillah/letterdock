@@ -93,7 +93,6 @@ try {
     html: '<h1>Hello</h1><p>Relayed via Letterdock!</p>',
     text: 'Hello. Relayed via Letterdock!'
   });
-
   assert(sendRes.data, 'sdk.emails.send must return data object');
   assert(sendRes.data.id, 'sdk.emails.send must return an email id');
   assert.equal(sendRes.error, null, 'sdk.emails.send must have null error');
