@@ -221,7 +221,14 @@ app.post<{Querystring:{to?:string,from?:string}}>('/api/ingress/raw', async (req
     if (b.to && typeof b.to === 'string') to = b.to;
     if (b.from && typeof b.from === 'string') from = b.from;
     if (typeof b.raw === 'string') {
-      rawBuf = Buffer.from(b.raw, b.raw.includes('\n') ? 'utf8' : 'base64');
+      const rawStr = b.raw.trim();
+      const isPlainMime = /^(From|Received|Return-Path|To|Subject|Date|MIME-Version):/im.test(rawStr);
+      if (isPlainMime) {
+        rawBuf = Buffer.from(rawStr, 'utf8');
+      } else {
+        const cleanB64 = rawStr.replace(/\s+/g, '');
+        rawBuf = Buffer.from(cleanB64, 'base64');
+      }
     } else if (typeof b.eml === 'string') {
       rawBuf = Buffer.from(b.eml, 'utf8');
     }
@@ -256,6 +263,7 @@ app.post<{Querystring:{to?:string,from?:string}}>('/api/ingress/raw', async (req
   const status = log?.status ?? (imported ? 'stored' : 'rejected');
 
   if (status !== 'stored') {
+    await storage.delete('messages/raw/' + id + '.eml').catch(() => {});
     switch (status) {
       case 'unknown_domain':
         return res.code(404).send({ ok: false, error: 'unknown_domain', message: 'Domain not registered or unverified' });

@@ -69,9 +69,13 @@ export async function importMail(id: string, from: string, to: string, raw: Uint
       maxMessageBytes,dailyDomainBytes,maxDatabaseBytes,disk.bavail*disk.bsize,minFreeBytes,
       storedRaw.key, storedRaw.sha256, storedRaw.size]);
     await client.query('COMMIT');
+    if (outcome?.status !== 'stored') {
+      await storage.delete(rawKey).catch(() => {});
+    }
     return outcome?.status !== 'storage_quota' && outcome?.status !== 'domain_quota';
   } catch(error) {
     await client.query('ROLLBACK');
+    await storage.delete('messages/raw/' + id + '.eml').catch(() => {});
     throw error;
   } finally { client.release(); }
 }
@@ -339,6 +343,7 @@ export async function runJobs() {
     migrateLegacyStorage(10),
     db.query("DELETE FROM ingest_log WHERE time < now()-interval '30 days' AND status <> 'stored'"),
     db.query("DELETE FROM sessions WHERE expires_at < now()"),
+    db.query("DELETE FROM job_queue WHERE status = 'completed' AND updated_at < now() - interval '7 days'"),
     db.query(`DELETE FROM deliveries WHERE id IN (
       SELECT id FROM deliveries WHERE message_removed_at<now()-interval '30 days' LIMIT 100
     )`),

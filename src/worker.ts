@@ -27,12 +27,11 @@ export class WorkerPool {
     this.concurrency = options.concurrency ?? (Number.isSafeInteger(envConcurrency) && envConcurrency > 0 ? envConcurrency : 4);
 
     // Register built-in default handlers
-    this.registerHandler('parse_email', async (job) => {
-      // Direct parseNext drain or message-specific parse
+    this.registerHandler('parse_email', async () => {
       await parseNext();
     });
 
-    this.registerHandler('deliver_webhook', async (job) => {
+    this.registerHandler('deliver_webhook', async () => {
       await deliver();
     });
 
@@ -120,18 +119,29 @@ export class WorkerPool {
     }
   }
 
-  public async completeJob(jobId: string): Promise<void> {
-    await db.query(`
+  public async heartbeat(jobId: string, workerId: string): Promise<boolean> {
+    const res = await db.query(`
+      UPDATE job_queue
+      SET locked_until = now() + interval '30 seconds',
+          updated_at = now()
+      WHERE id = $1 AND locked_by = $2 AND status = 'processing'
+    `, [jobId, workerId]);
+    return Boolean(res.rowCount && res.rowCount > 0);
+  }
+
+  public async completeJob(jobId: string, workerId: string): Promise<boolean> {
+    const res = await db.query(`
       UPDATE job_queue
       SET status = 'completed',
           locked_until = NULL,
           locked_by = NULL,
           updated_at = now()
-      WHERE id = $1
-    `, [jobId]);
+      WHERE id = $1 AND locked_by = $2 AND status = 'processing'
+    `, [jobId, workerId]);
+    return Boolean(res.rowCount && res.rowCount > 0);
   }
 
-  public async failJob(job: Job, error: unknown): Promise<void> {
+  public async failJob(job: Job, workerId: string, error: unknown): Promise<void> {
     const errMsg = error instanceof Error ? error.message : String(error);
     if (job.attempts >= job.max_attempts) {
       await db.query(`
@@ -141,8 +151,8 @@ export class WorkerPool {
             locked_by = NULL,
             last_error = $2,
             updated_at = now()
-        WHERE id = $1
-      `, [job.id, errMsg]);
+        WHERE id = $1 AND locked_by = $3 AND status = 'processing'
+      `, [job.id, errMsg, workerId]);
     } else {
       // Exponential backoff with random jitter: (2^attempts * 5s) + random(0, 3s), capped at 1h
       const backoffSec = Math.min(3600, Math.floor(Math.pow(2, Math.min(job.attempts, 8)) * 5 + Math.random() * 3));
@@ -154,13 +164,14 @@ export class WorkerPool {
             next_attempt = now() + make_interval(secs => $2),
             last_error = $3,
             updated_at = now()
-        WHERE id = $1
-      `, [job.id, backoffSec, errMsg]);
+        WHERE id = $1 AND locked_by = $4 AND status = 'processing'
+      `, [job.id, backoffSec, errMsg, workerId]);
     }
   }
 
   private async runWorker(workerIndex: number): Promise<void> {
     const workerId = 'worker-' + workerIndex + '-' + randomUUID().slice(0, 8);
+    let idleDelay = 500;
 
     while (this.running) {
       let didWork = false;
@@ -172,14 +183,29 @@ export class WorkerPool {
           didWork = true;
           const handler = this.handlers.get(job.job_type);
           if (handler) {
+            let heartbeatTimer: NodeJS.Timeout | null = null;
             try {
+              // Periodic lease extension every 10s for long-running operations
+              heartbeatTimer = setInterval(async () => {
+                try {
+                  const renewed = await this.heartbeat(job.id, workerId);
+                  if (!renewed) {
+                    console.warn('[' + workerId + '] Lease lost during execution for job: ' + job.id);
+                  }
+                } catch (hbErr) {
+                  console.error('[' + workerId + '] Heartbeat error for job: ' + job.id, hbErr);
+                }
+              }, 10000);
+
               await handler(job, this.abortController.signal);
-              await this.completeJob(job.id);
+              await this.completeJob(job.id, workerId);
             } catch (err) {
-              await this.failJob(job, err);
+              await this.failJob(job, workerId, err);
+            } finally {
+              if (heartbeatTimer) clearInterval(heartbeatTimer);
             }
           } else {
-            await this.failJob(job, new Error('No handler registered for job type: ' + job.job_type));
+            await this.failJob(job, workerId, new Error('No handler registered for job type: ' + job.job_type));
           }
         }
       } catch (err) {
@@ -207,12 +233,13 @@ export class WorkerPool {
       }
 
       if (didWork) {
-        // Immediate tick to drain backlog without idle sleep
+        idleDelay = 500;
         continue;
       }
 
-      // No work found across any queue; wait for wake event or timeout
-      await this.waitIdle(500);
+      // Dynamic backoff for idle workers, immediately interrupted by wake()
+      await this.waitIdle(idleDelay);
+      idleDelay = Math.min(idleDelay + 250, 1500);
     }
   }
 

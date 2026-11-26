@@ -157,9 +157,9 @@ export async function migrate() {
       workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
       job_type text NOT NULL,
       payload jsonb NOT NULL DEFAULT '{}',
-      status text NOT NULL DEFAULT 'pending',
-      attempts integer NOT NULL DEFAULT 0,
-      max_attempts integer NOT NULL DEFAULT 5,
+      status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'dead_letter')),
+      attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+      max_attempts integer NOT NULL DEFAULT 5 CHECK (max_attempts > 0),
       locked_until timestamptz,
       locked_by text,
       next_attempt timestamptz NOT NULL DEFAULT now(),
@@ -167,7 +167,7 @@ export async function migrate() {
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
-    CREATE INDEX IF NOT EXISTS job_queue_active ON job_queue(next_attempt, status)
+    CREATE INDEX IF NOT EXISTS job_queue_active ON job_queue(next_attempt ASC, created_at ASC)
       WHERE status IN ('pending', 'processing');
     CREATE INDEX IF NOT EXISTS job_queue_locked ON job_queue(locked_until)
       WHERE status = 'processing';

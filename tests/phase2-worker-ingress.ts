@@ -145,6 +145,28 @@ const { rows: [recJob] } = await db.query('SELECT status FROM job_queue WHERE id
 assert.equal(recJob.status, 'completed');
 
 // -------------------------------------------------------------
+// 3b. Test Heartbeat Lease Renewal
+// -------------------------------------------------------------
+console.log('--- 3b. Testing Heartbeat Lease Renewal ---');
+const hbPool = new WorkerPool({ concurrency: 1 });
+let hbRunCompleted = false;
+hbPool.registerHandler('heartbeat_test', async (job) => {
+  const workerId = 'test-worker-manual';
+  await db.query('UPDATE job_queue SET locked_by=$1 WHERE id=$2', [workerId, job.id]);
+  const renewed = await hbPool.heartbeat(job.id, workerId);
+  assert.equal(renewed, true, 'Heartbeat must successfully extend active lease');
+  hbRunCompleted = true;
+});
+const hbJobId = await hbPool.enqueue('heartbeat_test', {});
+hbPool.start();
+for (let i = 0; i < 30; i++) {
+  if (hbRunCompleted) break;
+  await new Promise(r => setTimeout(r, 50));
+}
+await hbPool.stop();
+assert.equal(hbRunCompleted, true);
+
+// -------------------------------------------------------------
 // 4. Test Generic Raw HTTPS Ingestion API (POST /api/ingress/raw)
 // -------------------------------------------------------------
 console.log('--- 4. Testing Generic Raw Ingress API ---');
@@ -260,7 +282,26 @@ try {
   const jsonResData = await jsonIngestRes.json() as any;
   assert.equal(jsonResData.ok, true);
 
-  // E. Reject unknown/unverified domain
+  // D2. Ingest via JSON payload with RFC 2045 line-wrapped Base64
+  const wrappedB64 = Buffer.from('From: wrap@example.com\r\nTo: docs@' + domain + '\r\nSubject: Wrapped Base64\r\n\r\nWrapped body.')
+    .toString('base64')
+    .match(/.{1,20}/g)!
+    .join('\r\n'); // purposefully wrap every 20 characters
+  const wrappedRes = await fetch(origin + '/api/ingress/raw', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + ingressKey,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: 'wrap@example.com',
+      to: 'docs@' + domain,
+      raw: wrappedB64
+    })
+  });
+  assert.equal(wrappedRes.status, 201, 'Line-wrapped Base64 JSON ingress must succeed with 201');
+
+  // E. Reject unknown/unverified domain and verify zero storage leak
   const unknownDomainRes = await fetch(origin + '/api/ingress/raw', {
     method: 'POST',
     headers: {
@@ -272,6 +313,10 @@ try {
   assert.equal(unknownDomainRes.status, 404, 'Unknown domain must return 404');
   const unknownData = await unknownDomainRes.json() as any;
   assert.equal(unknownData.error, 'unknown_domain');
+  // Verify no orphaned file in storage
+  const { rows: rejectedLogs } = await db.query("SELECT id FROM ingest_log WHERE recipient='nobody@unregistered-domain.com' ORDER BY time DESC LIMIT 1");
+  assert(rejectedLogs.length > 0);
+  assert.equal(await storage.exists('messages/raw/' + rejectedLogs[0].id + '.eml'), false, 'Orphaned raw MIME blob must be deleted on rejected ingest');
 
   // F. Domain-scoped API Key Authentication
   const apiToken = 'ld_ingresstest_' + randomUUID().replace(/-/g, '');
