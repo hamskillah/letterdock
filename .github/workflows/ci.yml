@@ -30,3 +30,42 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm test
       - run: docker build -t letterdock:ci .
+
+  deploy:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH to deploy host
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+
+      - name: Sync source to deploy host
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes" \
+            --exclude '.git/' --exclude 'node_modules/' --exclude '.env' \
+            --exclude 'postgres-data/' --exclude 'database/' \
+            ./ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
+
+      - name: Backup DB, rebuild and restart
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "cd '${{ secrets.DEPLOY_PATH }}' && \
+             install -d -m 700 "\$HOME/letterdock-backups" && \
+             (umask 077; sudo docker compose exec -T db pg_dump -U letterdock -Fc letterdock > "\$HOME/letterdock-backups/letterdock-\$(date +%Y%m%d%H%M%S).dump") && \
+             sudo docker compose up -d --build"
+
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "curl -fsS --max-time 10 http://127.0.0.1:3000/ >/dev/null && \
+             cd '${{ secrets.DEPLOY_PATH }}' && sudo docker compose ps"
+
