@@ -150,5 +150,28 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS ingest_log_activity ON ingest_log(domain,time DESC,id DESC);
     CREATE INDEX IF NOT EXISTS ingest_log_domain_time ON ingest_log(domain,time) WHERE status='stored';
     CREATE INDEX IF NOT EXISTS ingest_log_rejected_time ON ingest_log(time) WHERE status<>'stored';
+
+    -- High-Throughput Worker Pool Queue (PostgreSQL-Native Concurrency)
+    CREATE TABLE IF NOT EXISTS job_queue (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      job_type text NOT NULL,
+      payload jsonb NOT NULL DEFAULT '{}',
+      status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'dead_letter')),
+      attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+      max_attempts integer NOT NULL DEFAULT 5 CHECK (max_attempts > 0),
+      locked_until timestamptz,
+      locked_by text,
+      next_attempt timestamptz NOT NULL DEFAULT now(),
+      last_error text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS job_queue_active ON job_queue(next_attempt ASC, created_at ASC)
+      WHERE status IN ('pending', 'processing');
+    CREATE INDEX IF NOT EXISTS job_queue_locked ON job_queue(locked_until)
+      WHERE status = 'processing';
+    CREATE INDEX IF NOT EXISTS job_queue_workspace ON job_queue(workspace_id);
+    CREATE INDEX IF NOT EXISTS job_queue_type ON job_queue(job_type);
   `);
 }

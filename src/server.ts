@@ -10,9 +10,19 @@ import { completeOAuth, startOAuth, type OAuthState } from './cloudflare-oauth.j
 import { domainConnectLink } from './domain-connect.js';
 import { connectCloudflare, connectionStatus, encryptSecret, domainSetup, SetupConflict } from './cloudflare.js';
 import { db, migrate } from './db.js';
-import { deliver, runJobs, stagingStatus } from './jobs.js';
+import { importMail, deliver, runJobs, stagingStatus } from './jobs.js';
+import { workerPool } from './worker.js';
 
-const app = Fastify({ logger: true, disableRequestLogging: true, routerOptions: { maxParamLength: 253 } });
+const app = Fastify({
+  logger: true,
+  disableRequestLogging: true,
+  bodyLimit: 25 * 1024 * 1024,
+  routerOptions: { maxParamLength: 253 }
+});
+
+app.addContentTypeParser(['message/rfc822', 'application/octet-stream'], { parseAs: 'buffer' }, (_req, body, done) => {
+  done(null, body);
+});
 const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 const listenPort = Number(process.env.PORT || 3000);
@@ -38,6 +48,21 @@ app.addHook('preHandler', async (req, res) => {
       if(key){apiScope.set(req,key);return;}
     }
     return res.code(401).send({ name:'validation_error', statusCode:401, message:'Invalid API key' });
+  }
+  if (path.startsWith('/api/ingress/')) {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith('Bearer ')) {
+      const token = auth.slice(7);
+      if (process.env.INGRESS_KEY && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(digest(process.env.INGRESS_KEY)))) {
+        return;
+      }
+      const { rows: [key] } = await db.query('SELECT id, domain FROM api_keys WHERE hash=$1', [digest(token)]);
+      if (key) {
+        apiScope.set(req, key);
+        return;
+      }
+    }
+    return res.code(401).send({ ok: false, error: 'unauthorized', message: 'Invalid or missing Ingress authentication' });
   }
   if (!['GET','HEAD'].includes(req.method) && req.headers.origin !== publicOrigin) {
     return res.code(403).send({ message:'Origin rejected' });
@@ -176,6 +201,97 @@ app.get<{Params:{id:string}}>('/api/files/:id',async(req,res)=>{
   if (!payload) return res.code(404).send();
   return res.header('Content-Disposition',safeName(row.filename)).type(row.mime || 'application/octet-stream').send(payload);
 });
+
+function extractHeader(rawText: string, headerName: string): string | null {
+  const match = rawText.match(new RegExp('^' + headerName + ':\\s*([^\\r\\n]+)', 'mi'));
+  if (!match) return null;
+  const emailMatch = match[1].match(/<([^>]+)>/);
+  return (emailMatch ? emailMatch[1] : match[1]).trim().toLowerCase();
+}
+
+app.post<{Querystring:{to?:string,from?:string}}>('/api/ingress/raw', async (req, res) => {
+  let rawBuf: Buffer | null = null;
+  let to: string | undefined = (req.headers['x-letterdock-to'] as string) || req.query.to;
+  let from: string | undefined = (req.headers['x-letterdock-from'] as string) || req.query.from;
+
+  if (Buffer.isBuffer(req.body)) {
+    rawBuf = req.body;
+  } else if (typeof req.body === 'object' && req.body !== null) {
+    const b = req.body as Record<string, any>;
+    if (b.to && typeof b.to === 'string') to = b.to;
+    if (b.from && typeof b.from === 'string') from = b.from;
+    if (typeof b.raw === 'string') {
+      const rawStr = b.raw.trim();
+      const isPlainMime = /^(From|Received|Return-Path|To|Subject|Date|MIME-Version):/im.test(rawStr);
+      if (isPlainMime) {
+        rawBuf = Buffer.from(rawStr, 'utf8');
+      } else {
+        const cleanB64 = rawStr.replace(/\s+/g, '');
+        rawBuf = Buffer.from(cleanB64, 'base64');
+      }
+    } else if (typeof b.eml === 'string') {
+      rawBuf = Buffer.from(b.eml, 'utf8');
+    }
+  } else if (typeof req.body === 'string') {
+    rawBuf = Buffer.from(req.body, 'utf8');
+  }
+
+  if (!rawBuf || rawBuf.length === 0) {
+    return res.code(400).send({ ok: false, error: 'empty_payload', message: 'Payload is empty' });
+  }
+
+  const rawHead = rawBuf.subarray(0, Math.min(rawBuf.length, 4096)).toString('utf8');
+  if (!to) to = extractHeader(rawHead, 'to') ?? undefined;
+  if (!from) from = extractHeader(rawHead, 'from') ?? undefined;
+
+  if (!to || !to.includes('@')) {
+    return res.code(400).send({ ok: false, error: 'invalid_recipient', message: 'Valid recipient email required' });
+  }
+  to = to.toLowerCase();
+  from = (from || 'unknown@unknown').toLowerCase();
+  const domain = to.slice(to.lastIndexOf('@') + 1);
+
+  const scoped = apiScope.get(req);
+  if (scoped && scoped.domain && scoped.domain !== domain) {
+    return res.code(403).send({ ok: false, error: 'forbidden', message: 'API key not authorized for domain: ' + domain });
+  }
+
+  const id = randomUUID();
+  const imported = await importMail(id, from, to, rawBuf);
+
+  const { rows: [log] } = await db.query('SELECT status FROM ingest_log WHERE id=$1', [id]);
+  const status = log?.status ?? (imported ? 'stored' : 'rejected');
+
+  if (status !== 'stored') {
+    await storage.delete('messages/raw/' + id + '.eml').catch(() => {});
+    switch (status) {
+      case 'unknown_domain':
+        return res.code(404).send({ ok: false, error: 'unknown_domain', message: 'Domain not registered or unverified' });
+      case 'blocked':
+        return res.code(403).send({ ok: false, error: 'blocked', message: 'Sender is blocked' });
+      case 'message_too_large':
+        return res.code(413).send({ ok: false, error: 'message_too_large', message: 'Message exceeds maximum size' });
+      case 'domain_quota':
+        return res.code(429).send({ ok: false, error: 'domain_quota', message: 'Domain daily quota exceeded' });
+      case 'storage_quota':
+        return res.code(507).send({ ok: false, error: 'storage_quota', message: 'Storage quota exceeded' });
+      default:
+        return res.code(400).send({ ok: false, error: status, message: 'Message rejected: ' + status });
+    }
+  }
+
+  await workerPool.enqueue('parse_email', { messageId: id });
+  workerPool.wake();
+
+  return res.code(201).send({
+    ok: true,
+    id,
+    status: 'stored',
+    recipient: to,
+    domain
+  });
+});
+
 app.post<{Body:{domain?:string}}>('/api/cloudflare/oauth/start', async (req,res) => {
   try {
     const origin = new URL(publicOrigin);
@@ -531,14 +647,34 @@ try {
   throw error;
 } finally { migration.release(); }
 await app.listen({port:listenPort,host:'0.0.0.0'});
-async function tick() {
-  await runJobs();
-  setTimeout(tick, 3000);
+
+// Start concurrent worker pool for high-throughput job leasing and delivery
+workerPool.start();
+
+// Background recurring maintenance loop (R2 staging pull, storage migration, retention)
+let maintenanceTimer: NodeJS.Timeout | null = null;
+let shuttingDown = false;
+
+async function maintenanceTick() {
+  if (shuttingDown) return;
+  try {
+    await runJobs();
+  } catch (error) {
+    console.error('Maintenance background job failed', error);
+  } finally {
+    if (!shuttingDown) {
+      maintenanceTimer = setTimeout(maintenanceTick, 3000);
+    }
+  }
 }
-void tick();
-async function webhookTick() {
-  try {await deliver();}
-  catch(error){console.error('Webhook delivery failed',error);}
-  finally {setTimeout(webhookTick,3000);}
-}
-void webhookTick();
+void maintenanceTick();
+
+const shutdown = async () => {
+  shuttingDown = true;
+  if (maintenanceTimer) clearTimeout(maintenanceTimer);
+  await workerPool.stop();
+  await app.close();
+  process.exit(0);
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

@@ -185,4 +185,6 @@ try {
   console.log('All Phase 1 Foundation & Storage tests passed with 100% success!');
 } finally {
   server.kill('SIGTERM');
+  await db.end();
+  process.exit(0);
 }
