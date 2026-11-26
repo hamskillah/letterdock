@@ -80,7 +80,9 @@ export const stagingStatus = {
   configured: Boolean(s3 && bucket),
   lastChecked: null as string | null,
   moreWaiting: false,
-  error: false
+  error: false,
+  oldestItemAgeHours: 0,
+  staleItemCount: 0
 };
 let continuation: string | undefined;
 let workerCursor: string | null = null;
@@ -135,6 +137,21 @@ async function pull() {
   stagingStatus.moreWaiting = Boolean(page.IsTruncated);
   stagingStatus.error = false;
   continuation = page.NextContinuationToken;
+  const now = Date.now();
+  let maxAge = 0;
+  let staleCount = 0;
+  for (const entry of page.Contents ?? []) {
+    if (entry.LastModified) {
+      const ageHours = (now - entry.LastModified.getTime()) / (1000 * 3600);
+      if (ageHours > maxAge) maxAge = ageHours;
+      if (ageHours >= 72) {
+        staleCount++;
+        console.warn(`[STAGING ALERT] Message ${entry.Key} in staging for ${Math.round(ageHours)}h (TTL is 168h)`);
+      }
+    }
+  }
+  stagingStatus.oldestItemAgeHours = Math.round(maxAge);
+  stagingStatus.staleItemCount = staleCount;
   for (const entry of page.Contents ?? []) {
     const key = entry.Key!;
     try {
@@ -281,6 +298,7 @@ export async function deliver() {
         [job.id, success ? 'delivered' : job.attempts >= 7 ? 'failed' : 'pending']);
     }
     await client.query('COMMIT');
+    return Boolean(job);
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
 }
