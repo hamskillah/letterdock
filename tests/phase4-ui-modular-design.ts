@@ -67,7 +67,11 @@ export async function assertMessageFolder(msgId: string, expectedFolder: string)
   assert.equal(row.folder, expectedFolder, `Message ${msgId} folder must be '${expectedFolder}', got '${row.folder}'`);
 }
 
-export async function probeVisibleElementWithinBounds(page: Page, selector: string, maxWidth = 320): Promise<{ x: number; width: number; right: number }> {
+export async function probeVisibleElementWithinBounds(
+  page: Page,
+  selector: string,
+  maxWidth = 320
+): Promise<{ x: number; width: number; right: number }> {
   const locator = page.locator(selector).first();
   await locator.waitFor({ state: 'visible' });
   const box = await locator.boundingBox();
@@ -78,6 +82,43 @@ export async function probeVisibleElementWithinBounds(page: Page, selector: stri
   if (box.x < 0 || right > maxWidth) {
     throw new Error(`Element ${selector} exceeds viewport bounds: x=${box.x}, width=${box.width}, right=${right}, max=${maxWidth}`);
   }
+
+  // Check ancestor overflow clipping and hit-area reachability via elementFromPoint
+  const clippingOrReachabilityError = await page.evaluate(({ sel, cx, cy }) => {
+    const el = document.querySelector(sel);
+    if (!el) return 'Element not found in DOM';
+
+    const rect = el.getBoundingClientRect();
+    let parent = el.parentElement;
+    while (parent && parent !== document.documentElement) {
+      const style = window.getComputedStyle(parent);
+      if (style.overflow === 'hidden' || style.overflowX === 'hidden' || style.overflowY === 'hidden') {
+        const parentRect = parent.getBoundingClientRect();
+        if (
+          rect.top >= parentRect.bottom ||
+          rect.bottom <= parentRect.top ||
+          rect.left >= parentRect.right ||
+          rect.right <= parentRect.left ||
+          parentRect.width === 0 ||
+          parentRect.height === 0
+        ) {
+          return `Element ${sel} is clipped by ancestor <${parent.tagName.toLowerCase()} class="${parent.className}"> with overflow:hidden`;
+        }
+      }
+      parent = parent.parentElement;
+    }
+
+    const hit = document.elementFromPoint(cx, cy);
+    if (!hit || (!el.contains(hit) && !hit.contains(el))) {
+      return `Element ${sel} hit area at (${cx}, ${cy}) is obscured or clipped (hit element: <${hit?.tagName?.toLowerCase()} class="${hit?.className}">)`;
+    }
+    return null;
+  }, { sel: selector, cx: Math.round(box.x + box.width / 2), cy: Math.round(box.y + box.height / 2) });
+
+  if (clippingOrReachabilityError) {
+    throw new Error(clippingOrReachabilityError);
+  }
+
   return { x: box.x, width: box.width, right };
 }
 
@@ -272,6 +313,17 @@ try {
     await assertMessageFolder(msg2Id, 'archive');
   }
 
+  // 3i. Inbox search filtering: assert search input retains focus while filtering
+  const remainingTerm = openedSubject?.includes('Notice #1') ? 'Incident' : 'Deployment';
+  const remainingText = remainingTerm === 'Incident' ? 'Incident Report #2' : 'Deployment Notice #1';
+  await searchInput.focus();
+  await searchInput.fill(remainingTerm);
+  await page.locator('.rows').getByText(remainingText).waitFor();
+  const isSearchStillFocused = await searchInput.evaluate(input => input === document.activeElement);
+  assert.equal(isSearchStillFocused, true, 'Search input must retain focus while filtering messages');
+  await searchInput.fill('');
+  await page.keyboard.press('Escape');
+
   // -----------------------------------------------------------------
   // 4. Outbound Relay Management View & Landmark Focus
   // -----------------------------------------------------------------
@@ -327,6 +379,14 @@ try {
   await page.getByLabel('Subject').fill('P4 Test Outbound Dispatch');
   await page.getByLabel('HTML Body').fill('<p>Sovereign infrastructure delivery verified.</p>');
   await page.getByRole('button', { name: 'Send Message' }).click();
+
+  // Verify modal closes upon successful dispatch
+  const composeDialog = page.getByRole('dialog', { name: 'Compose Outbound Email' });
+  await composeDialog.waitFor({ state: 'hidden' });
+
+  // Verify focus returns to Compose button opener
+  const isComposeRefocusedAfterSuccess = await composeBtn.evaluate(btn => btn === document.activeElement);
+  assert.equal(isComposeRefocusedAfterSuccess, true, 'Focus must return to Compose button opener upon successful dispatch');
 
   // Verify success banner notice on main shell
   const noticeBanner = page.locator('.banner').filter({ hasText: 'Email dispatched successfully' });
@@ -406,16 +466,19 @@ try {
   });
   assert.equal(isOverflowing320, false, '320px viewport must have zero horizontal overflow');
 
-  // Verify ALL visible actionable controls in the 320px mobile shell using production probe
+  // Verify ALL visible actionable topbar and search controls using production reachability probe
   await probeVisibleElementWithinBounds(mobilePage, 'button[aria-label="Open menu"]', 320);
   await probeVisibleElementWithinBounds(mobilePage, 'input[aria-label="Search messages"]', 320);
+  await probeVisibleElementWithinBounds(mobilePage, '.density-toggle', 320);
+  await probeVisibleElementWithinBounds(mobilePage, 'button[aria-label="Open keyboard shortcuts cheat-sheet"]', 320);
+  await probeVisibleElementWithinBounds(mobilePage, 'button[aria-label="Compose new outbound email"]', 320);
 
   // Open mobile drawer
   await mobilePage.getByRole('button', { name: 'Open menu' }).click();
   const sidebar = mobilePage.locator('.sidebar');
   await sidebar.waitFor();
 
-  // Verify drawer controls stay within 320px bounds
+  // Verify drawer controls stay within 320px bounds and are reachable
   await probeVisibleElementWithinBounds(mobilePage, 'button[aria-label="Close menu"]', 320);
   await probeVisibleElementWithinBounds(mobilePage, '.sidebar button.active', 320);
 
@@ -550,28 +613,42 @@ try {
   await db.query('DELETE FROM messages WHERE id = $1', [failingMsgId]);
   assert.equal(nc2Failed, true, 'Negative Control 2: assertMessageFolder must throw AssertionError when DB folder != expected');
 
-  // Negative Control 3: Real probeVisibleElementWithinBounds must fail on clipped/overflowing element
+  // Negative Control 3: probeVisibleElementWithinBounds must fail on ancestor-clipped element inside viewport
+  // Creates an ancestor with overflow:hidden and places button inside viewport bounds (right=190px <= 320px) but clipped by ancestor
   await mobilePage.evaluate(() => {
-    const el = document.createElement('button');
-    el.id = 'nc-overflowing-button';
-    el.textContent = 'Overflowing';
-    el.style.position = 'absolute';
-    el.style.left = '350px';
-    el.style.top = '10px';
-    el.style.width = '100px';
-    el.style.height = '40px';
-    document.body.appendChild(el);
+    const ancestor = document.createElement('div');
+    ancestor.id = 'nc-clipping-ancestor';
+    ancestor.style.position = 'absolute';
+    ancestor.style.left = '10px';
+    ancestor.style.top = '10px';
+    ancestor.style.width = '50px';
+    ancestor.style.height = '50px';
+    ancestor.style.overflow = 'hidden';
+
+    const child = document.createElement('button');
+    child.id = 'nc-clipped-child';
+    child.textContent = 'Ancestor Clipped';
+    child.style.position = 'absolute';
+    child.style.left = '100px'; // Viewport x is 10 + 100 = 110, right is 190px <= 320px, but outside 50px ancestor
+    child.style.top = '0';
+    child.style.width = '80px';
+    child.style.height = '40px';
+
+    ancestor.appendChild(child);
+    document.body.appendChild(ancestor);
   });
 
   let nc3Failed = false;
   try {
-    await probeVisibleElementWithinBounds(mobilePage, '#nc-overflowing-button', 320);
+    await probeVisibleElementWithinBounds(mobilePage, '#nc-clipped-child', 320);
   } catch (err: any) {
-    if (err.message.includes('exceeds viewport bounds')) nc3Failed = true;
+    if (err.message.includes('clipped by ancestor') || err.message.includes('hit area')) {
+      nc3Failed = true;
+    }
   }
-  await mobilePage.evaluate(() => document.getElementById('nc-overflowing-button')?.remove());
+  await mobilePage.evaluate(() => document.getElementById('nc-clipping-ancestor')?.remove());
   await mobilePage.close();
-  assert.equal(nc3Failed, true, 'Negative Control 3: probeVisibleElementWithinBounds must fail when element exceeds 320px');
+  assert.equal(nc3Failed, true, 'Negative Control 3: probeVisibleElementWithinBounds must detect and fail on ancestor-clipped element');
 
   console.log('All Phase 4 Modular Design Engineering & Sovereign UI tests passed successfully!');
 } finally {

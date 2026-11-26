@@ -65,7 +65,7 @@ export const Header: React.FC<HeaderProps> = ({
           aria-label="Compose new outbound email"
         >
           <PenSquare size={15} />
-          <span>Compose</span>
+          <span className="compose-label">Compose</span>
         </button>
       </div>
     </header>
