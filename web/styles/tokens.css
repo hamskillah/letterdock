@@ -17,6 +17,7 @@
   --unread-bg: #f0fdf4;
   --chosen-bg: #e2f1e5;
   --search-bg: #f1f5f9;
+  --placeholder-color: #475569;
 
   /* Legacy variable mappings for backward compatibility with existing tests */
   --ink: #0f172a;
@@ -77,6 +78,7 @@
   --unread-bg: #0d231e;
   --chosen-bg: #14352d;
   --search-bg: #141d2e;
+  --placeholder-color: #94a3b8;
 
   --ink: #f8fafc;
   --muted: #94a3b8;

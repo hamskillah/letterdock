@@ -243,6 +243,10 @@ try {
   // Press Escape and verify focus restores to helpButton opener
   await page.keyboard.press('Escape');
   await shortcutsModal.waitFor({ state: 'hidden' });
+  for (let i = 0; i < 20; i++) {
+    if (await helpButton.evaluate(btn => btn === document.activeElement)) break;
+    await new Promise(r => setTimeout(r, 50));
+  }
   const isHelpRefocused = await helpButton.evaluate(btn => btn === document.activeElement);
   assert.equal(isHelpRefocused, true, 'Escape must return focus to the opener element');
 
@@ -271,6 +275,10 @@ try {
   // Dismiss via Escape and verify focus restoration to composeTrigger
   await page.keyboard.press('Escape');
   await composeModal.waitFor({ state: 'hidden' });
+  for (let i = 0; i < 20; i++) {
+    if (await composeTrigger.evaluate(btn => btn === document.activeElement)) break;
+    await new Promise(r => setTimeout(r, 50));
+  }
   const isComposeRefocused = await composeTrigger.evaluate(btn => btn === document.activeElement);
   assert.equal(isComposeRefocused, true, 'Closing modal via Escape must restore focus to opener button');
 
@@ -560,6 +568,17 @@ try {
   });
   const searchRatio = measureContrast(searchContrast.color, searchContrast.bg);
   assert(searchRatio >= 4.5, 'Dark mode search text contrast must be >= 4.5:1, got ' + searchRatio.toFixed(2));
+
+  // Assert empty placeholder text contrast in dark mode (WCAG 2.1 AA >= 4.5:1)
+  await searchEl.fill('');
+  const placeholderContrast = await searchEl.evaluate(el => {
+    const s = window.getComputedStyle(el, '::placeholder');
+    const parent = window.getComputedStyle(el.closest('.search') || el);
+    return { color: s.color, bg: parent.backgroundColor };
+  });
+  const placeholderRatio = measureContrast(placeholderContrast.color, placeholderContrast.bg);
+  assert(placeholderRatio >= 4.5, 'Dark mode search placeholder contrast must be >= 4.5:1, got ' + placeholderRatio.toFixed(2));
+
   await darkPage.close();
 
   // -----------------------------------------------------------------

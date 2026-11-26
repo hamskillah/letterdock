@@ -50,7 +50,9 @@ export const Modal: React.FC<ModalProps> = ({
       if (openerRef.current && typeof openerRef.current.focus === 'function') {
         const toFocus = openerRef.current;
         openerRef.current = null;
-        requestAnimationFrame(() => toFocus.focus());
+        try {
+          toFocus.focus();
+        } catch {}
       }
     }
   }, [isOpen]);

@@ -11,6 +11,7 @@ button,.button{display:inline-flex;align-items:center;justify-content:center;gap
 button:hover,.button:hover{background:var(--soft)}
 :focus-visible{outline:2px solid #307d55;outline-offset:3px}
 input:not([type=checkbox]){border:1px solid var(--line);border-radius:var(--radius);padding:.6rem .7rem;background:white;color:var(--ink);width:100%;min-width:0}
+input::placeholder,textarea::placeholder{color:var(--placeholder-color);opacity:1}
 input[type=checkbox]{accent-color:var(--accent)}
 label{font-size:.82rem;color:var(--muted);display:grid;gap:.36rem}
 h1,h2,h3,p{margin:0}
