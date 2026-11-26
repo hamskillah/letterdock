@@ -26,6 +26,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: python3 tests/deploy_release_test.py
+      - run: python3 tests/deploy_compose_lifecycle_test.py
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm test
@@ -35,6 +37,9 @@ jobs:
     needs: verify
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    concurrency:
+      group: letterdock-production-deploy
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -45,27 +50,27 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
 
-      - name: Sync source to deploy host
+      - name: Stage isolated candidate and deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          rsync -az --delete \
-            -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes" \
+          set -euo pipefail
+          # Restrict values used in the remote shell command and rsync destination.
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9_./-]+$ && "$DEPLOY_PATH" != *..* && "$DEPLOY_PATH" != */ ]]
+          candidate="${DEPLOY_PATH}.releases/$RUN"
+          host="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh_opts=(-i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes)
+          ssh "${ssh_opts[@]}" "$host" "mkdir -p '${DEPLOY_PATH}.releases' && mkdir '$candidate'"
+          rsync -az -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes" \
             --exclude '.git/' --exclude 'node_modules/' --exclude '.env' \
-            --exclude 'postgres-data/' --exclude 'database/' \
-            ./ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
-
-      - name: Backup DB, rebuild and restart
-        run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "cd '${{ secrets.DEPLOY_PATH }}' && \
-             install -d -m 700 "\$HOME/letterdock-backups" && \
-             (umask 077; sudo docker compose exec -T db pg_dump -U letterdock -Fc letterdock > "\$HOME/letterdock-backups/letterdock-\$(date +%Y%m%d%H%M%S).dump") && \
-             sudo docker compose up -d --build"
-
-      - name: Health check
-        run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "curl -fsS --max-time 10 http://127.0.0.1:3000/ >/dev/null && \
-             cd '${{ secrets.DEPLOY_PATH }}' && sudo docker compose ps"
-
+            --exclude 'postgres-data/' --exclude 'database/' ./ "$host:$candidate/"
+          printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$host" \
+            "bash '$candidate/deploy/release.sh' '$DEPLOY_PATH' '$candidate' '$SHA' '$REPOSITORY' '$RUN'"
