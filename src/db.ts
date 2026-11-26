@@ -1,6 +1,6 @@
 import pg from 'pg';
 
-export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://postgres:letterdock_test@127.0.0.1:5432/postgres' });
 
 export async function migrate() {
   await db.query(`
@@ -184,7 +184,7 @@ export async function migrate() {
       credentials_encrypted text NOT NULL,
       from_name text NOT NULL DEFAULT '',
       from_email text NOT NULL DEFAULT '',
-      is_default boolean NOT NULL DEFAULT true,
+      is_default boolean NOT NULL DEFAULT false,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now(),
       CONSTRAINT outbound_profiles_ws_domain_key UNIQUE (workspace_id, domain)
@@ -202,6 +202,7 @@ export async function migrate() {
       CONSTRAINT suppressions_ws_email_key UNIQUE (workspace_id, email)
     );
     CREATE INDEX IF NOT EXISTS suppressions_email_lookup ON suppressions(email);
+    CREATE INDEX IF NOT EXISTS suppressions_ws_lower_email ON suppressions(workspace_id, lower(email));
 
     CREATE TABLE IF NOT EXISTS outbound_messages (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

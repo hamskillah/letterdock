@@ -14,7 +14,7 @@ import { db, migrate } from './db.js';
 import { importMail, deliver, runJobs, stagingStatus } from './jobs.js';
 import { workerPool } from './worker.js';
 import { openApiSpec } from './openapi.js';
-import { sendEmail, extractEmailAddress, addSuppression, removeSuppression, OutboundError } from './outbound.js';
+import { sendEmail, extractEmailAddress, normalizeAddressList, checkSuppression, addSuppression, removeSuppression, OutboundError } from './outbound.js';
 
 const app = Fastify({
   logger: true,
@@ -86,9 +86,46 @@ app.addHook('preHandler', async (req, res) => {
     return res.code(401).send({ name: 'validation_error', statusCode: 401, message: 'Invalid API key' });
   }
 
-  // Public webhook endpoints for bounces & complaints
+  // Webhook endpoints for bounces & complaints (authenticated via secret, API key, or session)
   if (path.startsWith('/api/webhooks/')) {
-    return;
+    const webhookSecret = process.env.WEBHOOK_SECRET;
+    const incomingSecret = (req.headers['x-webhook-secret'] as string) || (req.query as any)?.secret;
+    const auth = req.headers.authorization;
+    const bearerToken = auth?.startsWith('Bearer ') ? auth.slice(7) : null;
+
+    if (webhookSecret && (incomingSecret === webhookSecret || bearerToken === webhookSecret)) {
+      apiScope.set(req, { id: 'webhook-secret', workspace_id: 'default', domain: null });
+      return;
+    }
+
+    if (bearerToken) {
+      const { rows: [key] } = await db.query(
+        'SELECT id, domain, workspace_id FROM api_keys WHERE hash=$1',
+        [digest(bearerToken)]
+      );
+      if (key) {
+        apiScope.set(req, key);
+        return;
+      }
+    }
+
+    const sessionId = req.cookies.session;
+    if (sessionId && uuid.test(sessionId)) {
+      const { rows: [session] } = await db.query(
+        'SELECT id, workspace_id FROM sessions WHERE id=$1 AND expires_at > now()',
+        [sessionId]
+      );
+      if (session) {
+        apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
+        return;
+      }
+    }
+
+    return res.code(401).send({
+      name: 'unauthorized',
+      statusCode: 401,
+      message: 'Unauthorized webhook request. Provide a valid API key, active session, or webhook secret.'
+    });
   }
 
   // Administrative APIs allow Bearer API keys as well as browser session
@@ -771,24 +808,50 @@ app.post('/emails/batch', async (req, res) => {
     return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Batch payload must be a non-empty array' });
   }
 
+  if (list.length > 100) {
+    return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Batch size cannot exceed 100 emails' });
+  }
+
+  // Pre-validate all items upfront to prevent partial execution failures
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item || typeof item !== 'object') {
+      return res.code(422).send({ name: 'validation_error', statusCode: 422, message: `Invalid batch item at index ${i}` });
+    }
+    try {
+      const fromParsed = extractEmailAddress(item.from || '');
+      if (scoped?.domain && fromParsed.domain !== scoped.domain) {
+        return res.code(403).send({
+          name: 'forbidden',
+          statusCode: 403,
+          message: `API key is restricted to domain '${scoped.domain}'. Cannot send from '${fromParsed.domain}' at index ${i}.`
+        });
+      }
+    } catch {
+      return res.code(422).send({ name: 'validation_error', statusCode: 422, message: `Invalid from address at batch index ${i}` });
+    }
+
+    const toRecipients = normalizeAddressList(item.to);
+    if (toRecipients.length === 0) {
+      return res.code(422).send({ name: 'validation_error', statusCode: 422, message: `At least one valid recipient is required at index ${i}` });
+    }
+
+    const allRecipients = Array.from(new Set([...toRecipients, ...normalizeAddressList(item.cc), ...normalizeAddressList(item.bcc)]));
+    for (const recipient of allRecipients) {
+      const isSuppressed = await checkSuppression(workspaceId, recipient);
+      if (isSuppressed) {
+        return res.code(422).send({
+          name: 'validation_error',
+          statusCode: 422,
+          message: `Recipient '${recipient}' at batch index ${i} is on the suppression list.`
+        });
+      }
+    }
+  }
+
   const results: Array<{ id: string }> = [];
 
   for (const item of list) {
-    if (scoped?.domain) {
-      try {
-        const fromParsed = extractEmailAddress(item.from || '');
-        if (fromParsed.domain !== scoped.domain) {
-          return res.code(403).send({
-            name: 'forbidden',
-            statusCode: 403,
-            message: `API key is restricted to domain '${scoped.domain}'.`
-          });
-        }
-      } catch {
-        return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Invalid from address' });
-      }
-    }
-
     try {
       const result = await sendEmail({
         workspaceId,
@@ -836,6 +899,9 @@ app.get<{ Params: { id: string } }>('/emails/:id', async (req, res) => {
     [id]
   );
   if (outRow) {
+    if (scoped?.workspace_id && outRow.workspace_id !== scoped.workspace_id) {
+      return res.code(404).send(notFound('Email not found'));
+    }
     if (scoped?.domain && outRow.domain !== scoped.domain) {
       return res.code(404).send(notFound('Email not found'));
     }
@@ -856,10 +922,13 @@ app.get<{ Params: { id: string } }>('/emails/:id', async (req, res) => {
   }
 
   const { rows: [inRow] } = await db.query(
-    'SELECT id, domain, sender, recipient, subject, body, html, received FROM messages WHERE id = $1',
+    'SELECT id, domain, workspace_id, sender, recipient, subject, body, html, received FROM messages WHERE id = $1',
     [id]
   );
   if (inRow) {
+    if (scoped?.workspace_id && inRow.workspace_id !== scoped.workspace_id) {
+      return res.code(404).send(notFound('Email not found'));
+    }
     if (scoped?.domain && inRow.domain !== scoped.domain) {
       return res.code(404).send(notFound('Email not found'));
     }
@@ -886,6 +955,8 @@ app.get<{ Params: { id: string } }>('/emails/:id', async (req, res) => {
 // Resend REST API Parity (Domains & API Keys)
 // -------------------------------------------------------------
 app.post('/domains', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
   const body = req.body as any;
   const rawName = String(body?.name || '').trim().toLowerCase();
   if (!rawName || !rawName.includes('.')) {
@@ -893,11 +964,11 @@ app.post('/domains', async (req, res) => {
   }
 
   const { rows: [domain] } = await db.query(`
-    INSERT INTO domains (name, verified)
-    VALUES ($1, false)
-    ON CONFLICT (name) DO UPDATE SET removed_at = NULL
-    RETURNING name, token, verified, retention_days
-  `, [rawName]);
+    INSERT INTO domains (name, verified, workspace_id)
+    VALUES ($1, false, $2)
+    ON CONFLICT (name) DO UPDATE SET removed_at = NULL, workspace_id = EXCLUDED.workspace_id
+    RETURNING name, token, verified, retention_days, workspace_id
+  `, [rawName, workspaceId]);
 
   return res.code(201).send({
     id: domain.name,
@@ -929,12 +1000,15 @@ app.post('/domains', async (req, res) => {
 
 app.get('/domains', async (req) => {
   const scoped = apiScope.get(req);
-  const { rows } = await db.query(
-    'SELECT name, token, verified FROM domains WHERE removed_at IS NULL ' +
-    (scoped?.domain ? 'AND name = $1 ' : '') +
-    'ORDER BY name ASC',
-    scoped?.domain ? [scoped.domain] : []
-  );
+  const workspaceId = scoped?.workspace_id || 'default';
+  const params: any[] = [workspaceId];
+  let query = 'SELECT name, token, verified FROM domains WHERE removed_at IS NULL AND (workspace_id = $1 OR workspace_id IS NULL) ';
+  if (scoped?.domain) {
+    params.push(scoped.domain);
+    query += `AND name = $${params.length} `;
+  }
+  query += 'ORDER BY name ASC';
+  const { rows } = await db.query(query, params);
 
   return {
     data: rows.map(r => ({
@@ -949,9 +1023,11 @@ app.get('/domains', async (req) => {
 
 app.get<{ Params: { id: string } }>('/domains/:id', async (req, res) => {
   const { id } = req.params;
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
   const { rows: [domain] } = await db.query(
-    'SELECT name, token, verified FROM domains WHERE (name = $1 OR token::text = $1) AND removed_at IS NULL LIMIT 1',
-    [id]
+    'SELECT name, token, verified FROM domains WHERE (name = $1 OR token::text = $1) AND removed_at IS NULL AND (workspace_id = $2 OR workspace_id IS NULL) LIMIT 1',
+    [id, workspaceId]
   );
   if (!domain) return res.code(404).send(notFound('Domain not found'));
 
@@ -985,9 +1061,11 @@ app.get<{ Params: { id: string } }>('/domains/:id', async (req, res) => {
 
 app.post<{ Params: { id: string } }>('/domains/:id/verify', async (req, res) => {
   const { id } = req.params;
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
   const { rows: [domain] } = await db.query(
-    'SELECT name, verified FROM domains WHERE (name = $1 OR token::text = $1) AND removed_at IS NULL LIMIT 1',
-    [id]
+    'SELECT name, verified FROM domains WHERE (name = $1 OR token::text = $1) AND removed_at IS NULL AND (workspace_id = $2 OR workspace_id IS NULL) LIMIT 1',
+    [id, workspaceId]
   );
   if (!domain) return res.code(404).send(notFound('Domain not found'));
 
@@ -1073,23 +1151,28 @@ app.delete<{ Params: { id: string } }>('/api-keys/:id', async (req, res) => {
 // -------------------------------------------------------------
 // Outbound Relay Profiles & Abuse Suppression APIs
 // -------------------------------------------------------------
-app.get('/api/outbound/profiles', async () => {
+app.get('/api/outbound/profiles', async (req) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
   const { rows } = await db.query(
-    'SELECT id, workspace_id, domain, provider, from_name, from_email, is_default, created_at, updated_at FROM outbound_profiles ORDER BY domain ASC'
+    'SELECT id, workspace_id, domain, provider, from_name, from_email, is_default, created_at, updated_at FROM outbound_profiles WHERE workspace_id = $1 ORDER BY domain ASC',
+    [workspaceId]
   );
   return { profiles: rows };
 });
 
 app.post<{ Body: { domain: string; provider: 'smtp' | 'resend' | 'ses' | 'brevo' | 'mock'; credentials?: any; from_name?: string; from_email?: string; is_default?: boolean } }>('/api/outbound/profiles', async (req, res) => {
-  const { domain, provider, credentials, from_name = '', from_email = '', is_default = true } = req.body || {};
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { domain, provider, credentials, from_name = '', from_email = '', is_default = false } = req.body || {};
   if (!domain || !provider) {
     return res.code(400).send({ message: 'domain and provider are required' });
   }
   const encryptedCreds = encryptSecret(JSON.stringify(credentials || {}), 'outbound');
 
   await db.query(`
-    INSERT INTO outbound_profiles (domain, provider, credentials_encrypted, from_name, from_email, is_default)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO outbound_profiles (workspace_id, domain, provider, credentials_encrypted, from_name, from_email, is_default)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     ON CONFLICT (workspace_id, domain) DO UPDATE
     SET provider = EXCLUDED.provider,
         credentials_encrypted = EXCLUDED.credentials_encrypted,
@@ -1097,50 +1180,65 @@ app.post<{ Body: { domain: string; provider: 'smtp' | 'resend' | 'ses' | 'brevo'
         from_email = EXCLUDED.from_email,
         is_default = EXCLUDED.is_default,
         updated_at = now()
-  `, [domain, provider, encryptedCreds, from_name, from_email, is_default]);
+  `, [workspaceId, domain, provider, encryptedCreds, from_name, from_email, is_default]);
 
   return { ok: true };
 });
 
 app.delete<{ Params: { domain: string } }>('/api/outbound/profiles/:domain', async (req) => {
-  await db.query('DELETE FROM outbound_profiles WHERE domain = $1', [req.params.domain]);
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  await db.query('DELETE FROM outbound_profiles WHERE workspace_id = $1 AND domain = $2', [workspaceId, req.params.domain]);
   return { ok: true };
 });
 
-app.get('/api/suppressions', async () => {
-  const { rows } = await db.query('SELECT id, email, domain, reason, details, created_at FROM suppressions ORDER BY created_at DESC LIMIT 500');
+app.get('/api/suppressions', async (req) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { rows } = await db.query(
+    'SELECT id, email, domain, reason, details, created_at FROM suppressions WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 500',
+    [workspaceId]
+  );
   return { suppressions: rows };
 });
 
 app.post<{ Body: { email: string; reason?: 'bounce' | 'complaint' | 'manual'; details?: string; domain?: string } }>('/api/suppressions', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
   const { email, reason = 'manual', details = '', domain } = req.body || {};
   if (!email || !email.includes('@')) {
     return res.code(400).send({ message: 'Valid email address required' });
   }
-  await addSuppression('default', email, reason, details, domain);
+  await addSuppression(workspaceId, email, reason, details, domain);
   return { ok: true };
 });
 
 app.delete<{ Params: { email: string } }>('/api/suppressions/:email', async (req) => {
-  const deleted = await removeSuppression('default', req.params.email);
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const deleted = await removeSuppression(workspaceId, req.params.email);
   return { ok: true, deleted };
 });
 
 app.post<{ Body: { email: string; reason?: string; details?: string; domain?: string } }>('/api/webhooks/bounces', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
   const { email, reason = 'hard_bounce', details = '', domain } = req.body || {};
   if (!email || !email.includes('@')) {
     return res.code(400).send({ ok: false, message: 'Valid email address required' });
   }
-  await addSuppression('default', email, 'bounce', details || reason, domain);
+  await addSuppression(workspaceId, email, 'bounce', details || reason, domain);
   return { ok: true, suppressed: true };
 });
 
 app.post<{ Body: { email: string; details?: string; domain?: string } }>('/api/webhooks/complaints', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
   const { email, details = '', domain } = req.body || {};
   if (!email || !email.includes('@')) {
     return res.code(400).send({ ok: false, message: 'Valid email address required' });
   }
-  await addSuppression('default', email, 'complaint', details || 'spam complaint', domain);
+  await addSuppression(workspaceId, email, 'complaint', details || 'spam complaint', domain);
   return { ok: true, suppressed: true };
 });
 

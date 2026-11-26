@@ -52,7 +52,7 @@ export function clearMockSentEmails(): void {
 }
 
 export function extractEmailAddress(input: string): { address: string; domain: string; name?: string } {
-  const match = input.match(/(?:(?:"?([^"]*)"?s)?<)?([a-zA-Z0-9._%+-]+@([a-zA-Z0-9.-]+.[a-zA-Z]{2,}))>?/);
+  const match = input.match(/(?:(?:"?([^"]*)"?\s*)?<)?([a-zA-Z0-9._%+-]+@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}))>?/);
   if (!match) {
     throw new Error('Invalid email address format: ' + input);
   }
@@ -113,7 +113,7 @@ export async function getOutboundProfile(workspaceId: string, domain: string): P
 
   // 2. Try default workspace profile
   const { rows: [defaultProfile] } = await db.query(
-    'SELECT * FROM outbound_profiles WHERE workspace_id = $1 AND is_default = true LIMIT 1',
+    'SELECT * FROM outbound_profiles WHERE workspace_id = $1 AND is_default = true ORDER BY updated_at DESC, created_at DESC LIMIT 1',
     [workspaceId]
   );
   if (defaultProfile) {
@@ -288,6 +288,13 @@ async function sendViaResend(
   const apiKey = credentials.apiKey;
   if (!apiKey) throw new Error('Missing Resend API key in profile credentials');
 
+  const attachments = options.attachments?.map(att => ({
+    filename: att.filename,
+    content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : att.content,
+    path: att.path,
+    content_type: att.contentType
+  }));
+
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
@@ -304,7 +311,7 @@ async function sendViaResend(
       bcc: options.bcc,
       reply_to: options.replyTo,
       headers: options.headers,
-      attachments: options.attachments,
+      attachments,
       tags: options.tags
     })
   });
@@ -326,7 +333,31 @@ async function sendViaBrevo(
   if (!apiKey) throw new Error('Missing Brevo API key in profile credentials');
 
   const toList = normalizeAddressList(options.to).map(addr => ({ email: addr }));
+  const ccList = normalizeAddressList(options.cc).map(addr => ({ email: addr }));
+  const bccList = normalizeAddressList(options.bcc).map(addr => ({ email: addr }));
   const fromParsed = extractEmailAddress(options.from);
+
+  const payload: Record<string, any> = {
+    sender: { name: fromParsed.name || fromParsed.address, email: fromParsed.address },
+    to: toList,
+    subject: options.subject,
+    htmlContent: options.html,
+    textContent: options.text
+  };
+
+  if (ccList.length > 0) payload.cc = ccList;
+  if (bccList.length > 0) payload.bcc = bccList;
+  if (options.replyTo) {
+    const replyToList = normalizeAddressList(options.replyTo);
+    if (replyToList.length > 0) payload.replyTo = { email: replyToList[0] };
+  }
+  if (options.attachments && options.attachments.length > 0) {
+    payload.attachment = options.attachments.map(att => ({
+      name: att.filename,
+      content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : att.content,
+      url: att.path
+    }));
+  }
 
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
@@ -335,13 +366,7 @@ async function sendViaBrevo(
       'Content-Type': 'application/json',
       Accept: 'application/json'
     },
-    body: JSON.stringify({
-      sender: { name: fromParsed.name || fromParsed.address, email: fromParsed.address },
-      to: toList,
-      subject: options.subject,
-      htmlContent: options.html,
-      textContent: options.text
-    })
+    body: JSON.stringify(payload)
   });
 
   if (!res.ok) {
@@ -376,7 +401,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
   const domain = fromParsed.domain;
 
   const { rows: [domainRow] } = await db.query(
-    'SELECT name, verified, removed_at FROM domains WHERE name = $1 LIMIT 1',
+    'SELECT name, verified, removed_at, workspace_id FROM domains WHERE name = $1 LIMIT 1',
     [domain]
   );
 
@@ -388,14 +413,28 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
     );
   }
 
-  // 2. Normalize and validate Recipient addresses
+  // Cross-tenant check: ensure domain belongs to caller's workspace (or unscoped default)
+  if (domainRow.workspace_id && domainRow.workspace_id !== workspaceId) {
+    throw new OutboundError(
+      `Domain '${domain}' does not belong to authorized workspace '${workspaceId}'.`,
+      403,
+      'forbidden'
+    );
+  }
+
+  // 2. Normalize and validate Recipient addresses (to, cc, bcc)
   const toList = normalizeAddressList(options.to);
+  const ccList = normalizeAddressList(options.cc);
+  const bccList = normalizeAddressList(options.bcc);
+  const replyToList = normalizeAddressList(options.replyTo);
+
   if (toList.length === 0) {
     throw new OutboundError('At least one valid recipient email is required', 400, 'validation_error');
   }
 
-  // 3. Suppression check for all recipients
-  for (const recipient of toList) {
+  // 3. Suppression check for ALL recipient addresses (to, cc, bcc)
+  const allRecipients = Array.from(new Set([...toList, ...ccList, ...bccList]));
+  for (const recipient of allRecipients) {
     const isSuppressed = await checkSuppression(workspaceId, recipient);
     if (isSuppressed) {
       throw new OutboundError(
@@ -413,7 +452,11 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
       [workspaceId, options.idempotencyKey]
     );
     if (existing) {
-      return { id: existing.id };
+      if (existing.status !== 'failed') {
+        return { id: existing.id };
+      }
+      // If previous attempt failed, remove failed message record to allow clean retry
+      await db.query('DELETE FROM outbound_messages WHERE id = $1', [existing.id]);
     }
   }
 
@@ -423,37 +466,47 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
   const credentials = profile?.credentials || {};
 
   // 6. Record outbound message in database (status: sending)
-  const ccList = normalizeAddressList(options.cc);
-  const bccList = normalizeAddressList(options.bcc);
-  const replyToList = normalizeAddressList(options.replyTo);
-
-  const { rows: [msgRow] } = await db.query(`
-    INSERT INTO outbound_messages (
-      workspace_id, domain, idempotency_key, from_address, to_address, cc, bcc, reply_to,
-      subject, text_body, html_body, headers, tags, attachments, status, provider
-    ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8,
-      $9, $10, $11, $12, $13, $14, 'sending', $15
-    ) RETURNING id
-  `, [
-    workspaceId,
-    domain,
-    options.idempotencyKey ?? null,
-    options.from,
-    toList,
-    ccList,
-    bccList,
-    replyToList,
-    options.subject || '',
-    options.text || '',
-    options.html || '',
-    JSON.stringify(options.headers || {}),
-    JSON.stringify(options.tags || []),
-    JSON.stringify(options.attachments || []),
-    provider
-  ]);
-
-  const outboundId = msgRow.id;
+  let outboundId: string;
+  try {
+    const { rows: [msgRow] } = await db.query(`
+      INSERT INTO outbound_messages (
+        workspace_id, domain, idempotency_key, from_address, to_address, cc, bcc, reply_to,
+        subject, text_body, html_body, headers, tags, attachments, status, provider
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8,
+        $9, $10, $11, $12, $13, $14, 'sending', $15
+      ) RETURNING id
+    `, [
+      workspaceId,
+      domain,
+      options.idempotencyKey ?? null,
+      options.from,
+      toList,
+      ccList,
+      bccList,
+      replyToList,
+      options.subject || '',
+      options.text || '',
+      options.html || '',
+      JSON.stringify(options.headers || {}),
+      JSON.stringify(options.tags || []),
+      JSON.stringify(options.attachments || []),
+      provider
+    ]);
+    outboundId = msgRow.id;
+  } catch (err: any) {
+    // Handle concurrent identical idempotency key insert
+    if (err?.code === '23505' && options.idempotencyKey) {
+      const { rows: [existing] } = await db.query(
+        'SELECT id, status FROM outbound_messages WHERE workspace_id = $1 AND idempotency_key = $2 LIMIT 1',
+        [workspaceId, options.idempotencyKey]
+      );
+      if (existing && existing.status !== 'failed') {
+        return { id: existing.id };
+      }
+    }
+    throw err;
+  }
 
   // 7. Dispatch via driver
   try {
@@ -465,6 +518,8 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
       result = await sendViaResend(options, credentials);
     } else if (provider === 'brevo') {
       result = await sendViaBrevo(options, credentials);
+    } else if (provider === 'ses') {
+      throw new OutboundError('SES outbound relay driver is not configured. Configure SMTP or Resend driver.', 501, 'not_implemented');
     } else {
       // Mock / Offline driver
       result = await sendViaMock(options);

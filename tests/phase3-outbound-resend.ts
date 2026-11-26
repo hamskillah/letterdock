@@ -243,15 +243,29 @@ try {
   assert.equal(data1.id, data2.id, 'Idempotent calls must return the same message ID');
 
   // -------------------------------------------------------------
-  // 4. Test Suppression List & Bounce Handling
+  // 4. Test Suppression List, Webhook Auth & CC/BCC Protection
   // -------------------------------------------------------------
-  console.log('--- 4. Testing Suppression List & Bounce Handling ---');
+  console.log('--- 4. Testing Suppression List, Webhook Auth & CC/BCC Protection ---');
   const bounceTarget = 'bounced-user@destination.com';
 
-  // Send bounce webhook
-  const bounceRes = await fetch(origin + '/api/webhooks/bounces', {
+  // A. Unauthenticated bounce webhook must be rejected with 401
+  const unauthBounce = await fetch(origin + '/api/webhooks/bounces', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: bounceTarget,
+      reason: 'hard_bounce'
+    })
+  });
+  assert.equal(unauthBounce.status, 401, 'Unauthenticated bounce webhook must return 401');
+
+  // B. Authenticated bounce webhook succeeds
+  const bounceRes = await fetch(origin + '/api/webhooks/bounces', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + masterKeyRaw,
+      'Content-Type': 'application/json'
+    },
     body: JSON.stringify({
       email: bounceTarget,
       reason: 'hard_bounce',
@@ -263,7 +277,7 @@ try {
   const bounceData = await bounceRes.json() as { ok: boolean; suppressed: boolean };
   assert.equal(bounceData.suppressed, true);
 
-  // Verify recipient is now suppressed when attempting to send
+  // C. Verify recipient is suppressed when placed in 'to'
   const suppressedSend = await sdk.emails.send({
     from: 'support@' + domain,
     to: bounceTarget,
@@ -273,7 +287,28 @@ try {
   assert.equal(suppressedSend.data, null, 'Sending to suppressed recipient must fail');
   assert.equal(suppressedSend.error?.statusCode, 422, 'Suppressed recipient must return 422');
 
-  // Verify suppression can be cleared
+  // D. Verify recipient is also suppressed when placed in 'cc' or 'bcc'
+  const ccSuppressedSend = await sdk.emails.send({
+    from: 'support@' + domain,
+    to: 'innocent@example.com',
+    cc: [bounceTarget],
+    subject: 'Suppressed CC',
+    html: '<p>Test</p>'
+  });
+  assert.equal(ccSuppressedSend.data, null, 'Sending with suppressed recipient in CC must fail');
+  assert.equal(ccSuppressedSend.error?.statusCode, 422, 'Suppressed CC recipient must return 422');
+
+  const bccSuppressedSend = await sdk.emails.send({
+    from: 'support@' + domain,
+    to: 'innocent@example.com',
+    bcc: [bounceTarget],
+    subject: 'Suppressed BCC',
+    html: '<p>Test</p>'
+  });
+  assert.equal(bccSuppressedSend.data, null, 'Sending with suppressed recipient in BCC must fail');
+  assert.equal(bccSuppressedSend.error?.statusCode, 422, 'Suppressed BCC recipient must return 422');
+
+  // E. Verify suppression can be cleared
   const delSuppression = await fetch(origin + '/api/suppressions/' + encodeURIComponent(bounceTarget), {
     method: 'DELETE',
     headers: { Authorization: 'Bearer ' + masterKeyRaw }
@@ -288,6 +323,36 @@ try {
     html: '<p>Now allowed</p>'
   });
   assert(unsuppressedSend.data?.id, 'Send must succeed after removing suppression');
+
+  // F. Multi-Tenant Domain & Message Isolation
+  console.log('--- 4b. Testing Multi-Tenant Domain & Message Isolation ---');
+  await db.query("INSERT INTO workspaces (id, name) VALUES ('tenant-b', 'Tenant B') ON CONFLICT DO NOTHING");
+  const tenantBDomain = 'tenant-b.test.example';
+  await db.query(`
+    INSERT INTO domains (name, verified, workspace_id) VALUES ($1, true, 'tenant-b')
+    ON CONFLICT (name) DO UPDATE SET verified = true, workspace_id = 'tenant-b', removed_at = NULL
+  `, [tenantBDomain]);
+
+  const crossTenantSend = await sdk.emails.send({
+    from: 'attacker@' + tenantBDomain,
+    to: 'target@example.com',
+    subject: 'Cross tenant send',
+    html: '<p>Hijack</p>'
+  });
+  assert.equal(crossTenantSend.data, null, 'Sending from another workspace domain must fail');
+  assert.equal(crossTenantSend.error?.statusCode, 403, 'Cross-tenant domain send must return 403');
+
+  const tenantBKeyRaw = 're_' + randomBytes(32).toString('hex');
+  const tenantBKeyHash = createHash('sha256').update(tenantBKeyRaw).digest('hex');
+  await db.query(`
+    INSERT INTO api_keys (name, hash, domain, workspace_id)
+    VALUES ('Tenant B Key', $1, NULL, 'tenant-b')
+  `, [tenantBKeyHash]);
+
+  const tenantBSdk = new Resend(tenantBKeyRaw, { baseUrl: origin });
+  const leakCheck = await tenantBSdk.emails.get(sentId);
+  assert.equal(leakCheck.data, null, 'Tenant B cannot inspect emails from default workspace');
+  assert.equal(leakCheck.error?.statusCode, 404, 'Cross-tenant email retrieval must return 404');
 
   // -------------------------------------------------------------
   // 5. Test Outbound Profiles Management & Encryption

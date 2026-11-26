@@ -3,15 +3,14 @@ import { generateKeyPairSync, randomUUID, verify } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
 import { Resend } from 'resend';
-import { signedApplyUrl } from '../src/domain-connect.js';
-import { cloudflareToken, connectCloudflare, decryptSecret } from '../src/cloudflare.js';
-
 const origin='http://localhost:56314';
 const password='integration-secret-password';
 const sessionSecret='integration-session-secret-over-32';
 process.env.SESSION_SECRET=sessionSecret;
 process.env.DATABASE_URL=process.env.DATABASE_URL || 'postgres://postgres:letterdock_test@127.0.0.1:5432/postgres';
 
+const { signedApplyUrl } = await import('../src/domain-connect.js');
+const { cloudflareToken, connectCloudflare, decryptSecret } = await import('../src/cloudflare.js');
 const { db, migrate } = await import('../src/db.js');
 const { importMail, parseNext, runJobs } = await import('../src/jobs.js');
 const id=randomUUID();

@@ -450,6 +450,88 @@ export const openApiSpec = {
           '200': { description: 'Outbound profile configured' }
         }
       }
+    },
+    '/api/outbound/profiles/{domain}': {
+      delete: {
+        summary: 'Delete outbound relay profile for domain',
+        operationId: 'deleteOutboundProfile',
+        parameters: [
+          { name: 'domain', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Outbound profile deleted' }
+        }
+      }
+    },
+    '/api/suppressions': {
+      get: {
+        summary: 'List suppressed recipient email addresses',
+        operationId: 'listSuppressions',
+        responses: {
+          '200': { description: 'Active suppression list' }
+        }
+      },
+      post: {
+        summary: 'Add an email to the suppression list',
+        operationId: 'addSuppression',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email'],
+                properties: {
+                  email: { type: 'string', format: 'email' },
+                  reason: { type: 'string', enum: ['bounce', 'complaint', 'manual'], default: 'manual' },
+                  details: { type: 'string' },
+                  domain: { type: 'string' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': { description: 'Suppression created' }
+        }
+      }
+    },
+    '/api/suppressions/{email}': {
+      delete: {
+        summary: 'Remove an email from the suppression list',
+        operationId: 'removeSuppression',
+        parameters: [
+          { name: 'email', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Suppression removed' }
+        }
+      }
+    },
+    '/api/webhooks/complaints': {
+      post: {
+        summary: 'Record spam complaint webhook event and suppress recipient',
+        operationId: 'recordComplaintWebhook',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email'],
+                properties: {
+                  email: { type: 'string' },
+                  domain: { type: 'string' },
+                  details: { type: 'string' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': { description: 'Complaint recorded and recipient suppressed' }
+        }
+      }
     }
   }
 };
