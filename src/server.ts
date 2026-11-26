@@ -43,6 +43,23 @@ const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 const listenPort = Number(process.env.PORT || 3000);
 const publicOrigin = new URL(process.env.PUBLIC_URL || 'http://localhost:'+(process.env.APP_PORT || listenPort)).origin;
+const isAllowedOrigin = (origin: string | undefined): boolean => {
+  if (!origin) return false;
+  if (origin === publicOrigin) return true;
+  try {
+    const o = new URL(origin);
+    const p = new URL(publicOrigin);
+    if (
+      (o.hostname === 'localhost' || o.hostname === '127.0.0.1') &&
+      (p.hostname === 'localhost' || p.hostname === '127.0.0.1') &&
+      o.port === p.port &&
+      o.protocol === p.protocol
+    ) {
+      return true;
+    }
+  } catch {}
+  return false;
+};
 if (!password || password.length < 16 || !secret || secret.length < 32) throw Error('Configure ADMIN_PASSWORD and SESSION_SECRET');
 const signingKey = (purpose: string) => createHmac('sha256', secret).update('letterdock:'+purpose).digest();
 await app.register(cookies, { secret: signingKey('browser') });
@@ -104,7 +121,7 @@ app.addHook('preHandler', async (req, res) => {
     const session = await getSessionFromCookie(req);
     if (session) {
       // Enforce strict Origin check on cookie-authenticated mutations to prevent CSRF
-      if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== publicOrigin) {
+      if (!['GET', 'HEAD'].includes(req.method) && !isAllowedOrigin(req.headers.origin)) {
         return res.code(403).send({ name: 'forbidden', statusCode: 403, message: 'Origin rejected' });
       }
       apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
@@ -184,7 +201,7 @@ app.addHook('preHandler', async (req, res) => {
   if (!path.startsWith('/api/')) return;
   res.header('Cache-Control', 'no-store');
 
-  if (!['GET','HEAD'].includes(req.method) && req.headers.origin !== publicOrigin) {
+  if (!['GET','HEAD'].includes(req.method) && !isAllowedOrigin(req.headers.origin)) {
     return res.code(403).send({ message: 'Origin rejected' });
   }
   if (path === '/api/login') return;

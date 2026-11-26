@@ -313,16 +313,42 @@ try {
     await assertMessageFolder(msg2Id, 'archive');
   }
 
-  // 3i. Inbox search filtering: assert search input retains focus while filtering
+  // 3i. Inbox search filtering: seed a non-matching row, assert it disappears while matching row remains, and assert focus
+  const msg3Id = randomUUID();
+  await db.query(`
+    INSERT INTO messages (id, domain, recipient, sender, raw, subject, state, unread, folder, workspace_id)
+    VALUES ($1, $2, $3, 'ops@' || $2, $4, 'Database Maintenance #3', 'ready', true, 'inbox', 'default')
+  `, [msg3Id, testDomain, 'ops@' + testDomain, Buffer.from('Database maintenance')]);
+
+  // Trigger mailbox refresh by clicking Inbox in sidebar
+  await page.getByRole('button', { name: /^Inbox/ }).click();
   const remainingTerm = openedSubject?.includes('Notice #1') ? 'Incident' : 'Deployment';
-  const remainingText = remainingTerm === 'Incident' ? 'Incident Report #2' : 'Deployment Notice #1';
+  const matchingText = remainingTerm === 'Incident' ? 'Incident Report #2' : 'Deployment Notice #1';
+  const nonMatchingText = 'Database Maintenance #3';
+
+  // Wait for both rows to be rendered in inbox
+  await page.locator('.rows').getByText(matchingText).waitFor({ state: 'visible' });
+  await page.locator('.rows').getByText(nonMatchingText).waitFor({ state: 'visible' });
+
+  // Focus and type search filter
   await searchInput.focus();
   await searchInput.fill(remainingTerm);
-  await page.locator('.rows').getByText(remainingText).waitFor();
+
+  // Assert non-matching row disappears from view while matching row remains visible
+  await page.locator('.rows').getByText(nonMatchingText).waitFor({ state: 'hidden' });
+  await page.locator('.rows').getByText(matchingText).waitFor({ state: 'visible' });
+
+  // Assert focus remains strictly on search input after filtering narrows result set
   const isSearchStillFocused = await searchInput.evaluate(input => input === document.activeElement);
-  assert.equal(isSearchStillFocused, true, 'Search input must retain focus while filtering messages');
+  assert.equal(isSearchStillFocused, true, 'Search input must retain focus after filtering completes and non-matching rows disappear');
+
+  // Clear search input and assert non-matching row returns
   await searchInput.fill('');
+  await page.locator('.rows').getByText(nonMatchingText).waitFor({ state: 'visible' });
   await page.keyboard.press('Escape');
+
+  // Clean up msg3Id
+  await db.query('DELETE FROM messages WHERE id = $1', [msg3Id]);
 
   // -----------------------------------------------------------------
   // 4. Outbound Relay Management View & Landmark Focus
@@ -484,6 +510,57 @@ try {
 
   // Close drawer
   await mobilePage.getByRole('button', { name: 'Close menu' }).click();
+
+  // -----------------------------------------------------------------
+  // 8b. Dark Mode & System Contrast Verification (WCAG 2.1 AA >= 4.5:1)
+  // -----------------------------------------------------------------
+  console.log('--- 8b. Testing Dark Mode & WCAG 2.1 AA Contrast ---');
+  const darkPage = await browser.newPage({
+    viewport: { width: 320, height: 600 },
+    colorScheme: 'dark'
+  });
+  await darkPage.goto(origin);
+  await darkPage.getByLabel('Admin password').fill(password);
+  await darkPage.getByRole('button', { name: 'Sign in' }).click();
+  await darkPage.locator('.message-row.unread').first().waitFor();
+
+  const measureContrast = (rgb1Str: string, rgb2Str: string): number => {
+    const parse = (c: string) => {
+      const m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (!m) return [0, 0, 0];
+      return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+    };
+    const lum = (rgb: number[]) => {
+      const a = rgb.map(v => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+      });
+      return a[0] * 0.2126 + a[1] * 0.7152 + a[2] * 0.0722;
+    };
+    const l1 = lum(parse(rgb1Str));
+    const l2 = lum(parse(rgb2Str));
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+  };
+
+  const unreadContrast = await darkPage.locator('.message-row.unread').first().evaluate(el => {
+    const s = window.getComputedStyle(el);
+    const strong = el.querySelector('strong') || el;
+    const strongStyle = window.getComputedStyle(strong);
+    return { color: strongStyle.color, bg: s.backgroundColor };
+  });
+  const unreadRatio = measureContrast(unreadContrast.color, unreadContrast.bg);
+  assert(unreadRatio >= 4.5, 'Dark mode unread subject contrast must be >= 4.5:1, got ' + unreadRatio.toFixed(2));
+
+  const searchEl = darkPage.getByRole('textbox', { name: /search/i });
+  await searchEl.fill('dark test query');
+  const searchContrast = await searchEl.evaluate(el => {
+    const s = window.getComputedStyle(el);
+    const parent = window.getComputedStyle(el.closest('.search') || el);
+    return { color: s.color, bg: parent.backgroundColor };
+  });
+  const searchRatio = measureContrast(searchContrast.color, searchContrast.bg);
+  assert(searchRatio >= 4.5, 'Dark mode search text contrast must be >= 4.5:1, got ' + searchRatio.toFixed(2));
+  await darkPage.close();
 
   // -----------------------------------------------------------------
   // 9. Session Security Contract & CSRF Rejection Coverage
