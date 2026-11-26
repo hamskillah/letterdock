@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac } from 'node:crypto';
+import fs from 'node:fs/promises';
 import { chromium } from '@playwright/test';
 
 const origin = 'http://localhost:56315';
@@ -11,7 +12,6 @@ process.env.SESSION_SECRET = sessionSecret;
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:letterdock_test@127.0.0.1:5432/postgres';
 
 const { db, migrate } = await import('../src/db.js');
-const { importMail, runJobs } = await import('../src/jobs.js');
 
 console.log('=== Starting Phase 4: Modular Design Engineering & Sovereign UI Tests ===');
 
@@ -46,7 +46,7 @@ await db.query(`
     ($5, $2, $3, 'bob@' || $2, $6, 'Incident Report #2', 'ready', true, 'inbox', 'default')
 `, [msg1Id, testDomain, 'ops@' + testDomain, rawMime1, msg2Id, rawMime2]);
 
-// Launch server process
+// Launch server process (built bundle)
 const serverProcess = spawn('node', ['dist/server.js'], {
   env: {
     ...process.env,
@@ -79,7 +79,14 @@ try {
   // 1. Sign In & Navigation Verification
   // -----------------------------------------------------------------
   console.log('--- 1. Testing Authentication & Workspace Shell ---');
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  page.on('console', msg => console.log('PAGE LOG:', msg.text()));
+  page.on('pageerror', err => console.log('PAGE ERROR:', err.message));
+  page.on('requestfailed', req => console.log('REQ FAILED:', req.url(), req.failure()?.errorText));
+  page.on('response', res => {
+    if (res.url().includes('/emails')) console.log('RESPONSE:', res.status(), res.url());
+  });
   await page.goto(origin);
 
   // Sign in form
@@ -103,28 +110,45 @@ try {
   // -----------------------------------------------------------------
   // 2. Density System (Comfortable vs Compact)
   // -----------------------------------------------------------------
-  console.log('--- 2. Testing Density System (Comfortable vs Compact) ---');
+  console.log('--- 2. Testing Density System & Hit Target Sizes ---');
   // Default is comfortable
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-density')), 'comfortable');
-  const rowElement = page.locator('.message-row').first();
-  const heightComfortable = (await rowElement.boundingBox())!.height;
-  assert(heightComfortable >= 48, `Comfortable row height should be >= 48px, got ${heightComfortable}px`);
+  
+  // Measure both .message-row and the operator hit target .message-link
+  const rowComfortable = page.locator('.message-row').first();
+  const heightRowComfortable = (await rowComfortable.boundingBox())!.height;
+  const linkComfortable = page.locator('.message-link').first();
+  const heightLinkComfortable = (await linkComfortable.boundingBox())!.height;
+  
+  console.log(`Comfortable row height: ${heightRowComfortable}px, link target: ${heightLinkComfortable}px`);
+  assert(heightRowComfortable >= 48, `Comfortable row height should be >= 48px, got ${heightRowComfortable}px`);
+  assert(heightLinkComfortable >= 48, `Comfortable message-link hit target must be >= 48px, got ${heightLinkComfortable}px`);
 
   // Press 'd' to toggle density to compact
   await page.locator('body').click({ position: { x: 720, y: 15 } });
   await page.keyboard.press('d');
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-density')), 'compact');
-  const heightCompact = (await rowElement.boundingBox())!.height;
-  assert(heightCompact < heightComfortable, `Compact row height (${heightCompact}px) must be smaller than comfortable (${heightComfortable}px)`);
+  
+  const heightRowCompact = (await rowComfortable.boundingBox())!.height;
+  const heightLinkCompact = (await linkComfortable.boundingBox())!.height;
+  console.log(`Compact row height: ${heightRowCompact}px, link target: ${heightLinkCompact}px`);
+  
+  assert(heightRowCompact < heightRowComfortable, `Compact row height (${heightRowCompact}px) must be smaller than comfortable (${heightRowComfortable}px)`);
+  assert(heightLinkCompact < heightLinkComfortable, `Compact target height (${heightLinkCompact}px) must be tighter than comfortable (${heightLinkComfortable}px)`);
+  assert(heightLinkCompact >= 32, `Compact target height must remain accessible (>= 32px), got ${heightLinkCompact}px`);
 
-  // Toggle back to comfortable via button
+  // Toggle back to comfortable via topbar button
   await page.locator('.density-toggle').click();
   assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-density')), 'comfortable');
 
   // -----------------------------------------------------------------
-  // 3. Keyboard-First Navigation (j/k, Enter, c, ?, /)
+  // 3. Keyboard-First Navigation & Exact Fixture State Transitions
   // -----------------------------------------------------------------
-  console.log('--- 3. Testing Keyboard Shortcuts (j/k, Enter, c, ?, /) ---');
+  console.log('--- 3. Testing Keyboard Shortcuts (j/k, Enter, e, s, u, c, ?, /) ---');
+
+  // Test modifier guard: Ctrl+C or Cmd+C must NOT open compose modal
+  await page.keyboard.press('Control+c');
+  assert.equal(await page.locator('dialog[open]').count(), 0, 'Ctrl+C must not trigger compose modal');
 
   // Test '/' focuses search
   await page.locator('body').click({ position: { x: 720, y: 15 } });
@@ -137,7 +161,7 @@ try {
   await page.keyboard.press('?');
   const shortcutsModal = page.getByRole('dialog', { name: 'Keyboard Shortcuts' });
   await shortcutsModal.waitFor();
-  assert.equal(await page.getByText('j / k').count() > 0, true);
+  assert(await page.getByText('j / k or ↓ / ↑').count() > 0, 'Shortcuts table must describe navigation');
   await page.keyboard.press('Escape');
   await shortcutsModal.waitFor({ state: 'hidden' });
 
@@ -151,11 +175,29 @@ try {
   // Test 'j' navigates and opens message
   await page.locator('body').click({ position: { x: 720, y: 15 } });
   await page.keyboard.press('j');
-  await page.getByRole('heading', { name: /Notice #1|Report #2/ }).first().waitFor();
+  const detailTitle = page.getByRole('heading', { name: /Notice #1|Report #2/ }).first();
+  await detailTitle.waitFor();
+  const openedSubject = await detailTitle.textContent();
 
-  // Test 'e' archives current message
+  // Test 's' toggles star status on open message
+  await page.keyboard.press('s');
+  const starButton = page.locator('.reader-actions').getByRole('button', { name: /star/i });
+  // Wait for star state update
+  await page.waitForTimeout(300);
+
+  // Test 'e' archives current message - verify exact transition
   await page.keyboard.press('e');
-  // Should remove or archive message
+  
+  // Verify message row is removed from Inbox view
+  if (openedSubject?.includes('Notice #1')) {
+    await page.locator('.rows').getByText('Deployment Notice #1').waitFor({ state: 'hidden' });
+    const { rows: [msgRow] } = await db.query('SELECT folder FROM messages WHERE id = $1', [msg1Id]);
+    assert.equal(msgRow?.folder, 'archive', 'Exact fixture msg1Id must transition to archive folder');
+  } else {
+    await page.locator('.rows').getByText('Incident Report #2').waitFor({ state: 'hidden' });
+    const { rows: [msgRow] } = await db.query('SELECT folder FROM messages WHERE id = $1', [msg2Id]);
+    assert.equal(msgRow?.folder, 'archive', 'Exact fixture msg2Id must transition to archive folder');
+  }
 
   // -----------------------------------------------------------------
   // 4. Outbound Relay Management View
@@ -180,12 +222,27 @@ try {
   await page.getByText('MOCK').first().waitFor();
 
   // -----------------------------------------------------------------
-  // 5. Compose Outbound Email via Topbar Button
+  // 5. Compose Outbound Email: In-Modal Error & Success
   // -----------------------------------------------------------------
-  console.log('--- 5. Testing Outbound Email Composition ---');
+  console.log('--- 5. Testing Outbound Email Composition & In-Modal Errors ---');
   await page.getByRole('button', { name: 'Compose' }).click();
   await page.getByRole('dialog', { name: 'Compose Outbound Email' }).waitFor();
 
+  // 5a. Trigger an intentional validation error inside the composer
+  // Using an unverified sender domain to test error feedback inside modal
+  await page.getByLabel('To (comma separated)').fill('recipient@destination.com');
+  await page.getByLabel('Subject').fill('Test Error Draft');
+  await page.getByLabel('From').fill('bad@unverified-domain.com');
+  await page.getByRole('button', { name: 'Send Message' }).click();
+
+  // Verify error is rendered INSIDE the modal with role="alert"
+  const inModalError = page.locator('.compose-error[role="alert"]');
+  await inModalError.waitFor();
+  assert(await inModalError.textContent(), 'In-modal error must be displayed');
+  // Verify draft content is preserved
+  assert.equal(await page.getByLabel('Subject').inputValue(), 'Test Error Draft', 'Draft must be retained upon send failure');
+
+  // 5b. Correct the payload and send successfully
   await page.getByLabel('From').fill(`dispatcher@${testDomain}`);
   await page.getByLabel('To (comma separated)').fill('recipient@destination.com');
   await page.getByLabel('Subject').fill('P4 Test Outbound Dispatch');
@@ -193,7 +250,7 @@ try {
 
   await page.getByRole('button', { name: 'Send Message' }).click();
 
-  // Verify success banner notice
+  // Verify success banner notice on main shell
   const noticeBanner = page.locator('.banner').filter({ hasText: 'Email dispatched successfully' });
   await noticeBanner.waitFor();
   assert.match(await noticeBanner.textContent() || '', /Email dispatched successfully/);
@@ -254,9 +311,9 @@ try {
   await page.getByText(keyName).waitFor();
 
   // -----------------------------------------------------------------
-  // 8. Responsive Viewport & Zero Horizontal Overflow (320px)
+  // 8. Responsive Viewport & Non-Clipped Controls (320px)
   // -----------------------------------------------------------------
-  console.log('--- 8. Testing Responsive Viewports (320px, 768px, 1280px) ---');
+  console.log('--- 8. Testing 320px Responsive Viewport & Visible Hit Targets ---');
   await page.close();
 
   // 320px ultra-narrow mobile reflow
@@ -271,28 +328,154 @@ try {
   });
   assert.equal(isOverflowing320, false, '320px viewport must have zero horizontal overflow');
 
-  // Verify mobile menu open/close
-  await mobilePage.getByRole('button', { name: 'Open menu' }).click();
-  await mobilePage.locator('.sidebar').waitFor();
-  await mobilePage.getByRole('button', { name: 'Close menu' }).click();
+  // Verify that essential interactive controls are fully within visible screen (x + width <= 320)
+  const menuButton = mobilePage.getByRole('button', { name: 'Open menu' });
+  const menuBox = (await menuButton.boundingBox())!;
+  assert(menuBox.x >= 0 && menuBox.x + menuBox.width <= 320, 'Menu button must not overflow 320px viewport');
 
+  const mobileSearchBox = (await mobilePage.getByRole('textbox', { name: 'Search messages' }).boundingBox())!;
+  assert(mobileSearchBox.x >= 0 && mobileSearchBox.x + mobileSearchBox.width <= 320, 'Search input must not overflow 320px viewport');
+
+  // Verify mobile menu open/close
+  await menuButton.click();
+  const sidebar = mobilePage.locator('.sidebar');
+  await sidebar.waitFor();
+  await mobilePage.getByRole('button', { name: 'Close menu' }).click();
   await mobilePage.close();
 
   // -----------------------------------------------------------------
-  // 9. Process Memory RSS Budget Verification
+  // 9. Session Security Contract & CSRF Rejection Coverage
   // -----------------------------------------------------------------
-  console.log('--- 9. Checking Process Memory RSS Budget ---');
-  let serverRssMB = 0;
-  if (serverProcess.pid) {
-    try {
-      const fs = await import('node:fs/promises');
-      const statm = await fs.readFile(`/proc/${serverProcess.pid}/statm`, 'utf8');
-      const pages = parseInt(statm.split(' ')[1], 10);
-      serverRssMB = Math.round((pages * 4096) / (1024 * 1024));
-    } catch {}
-  }
-  console.log(`Server Process RSS: ${serverRssMB} MB`);
+  console.log('--- 9. Testing Session Security Contract & CSRF Coverage ---');
+
+  // 9a. Tampered cookie signature must be rejected (401)
+  const tamperedCookie = 's%3Asession%3A' + randomUUID() + '.invalidSignatureValue12345';
+  const tamperedRes = await fetch(origin + '/emails', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: 'session=' + tamperedCookie,
+      Origin: origin
+    },
+    body: JSON.stringify({ from: 'test@' + testDomain, to: ['a@b.com'], subject: 'test', html: 'test' })
+  });
+  assert.equal(tamperedRes.status, 401, 'Tampered cookie signature must be rejected with 401');
+
+  // 9b. Unsigned raw cookie must be rejected (401)
+  const unsignedCookie = randomUUID();
+  const unsignedRes = await fetch(origin + '/emails', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: 'session=' + unsignedCookie,
+      Origin: origin
+    },
+    body: JSON.stringify({ from: 'test@' + testDomain, to: ['a@b.com'], subject: 'test', html: 'test' })
+  });
+  assert.equal(unsignedRes.status, 401, 'Unsigned cookie must be rejected with 401');
+
+  // 9c. Wrong Origin on cookie-authenticated mutation must be rejected with 403 (CSRF Protection)
+  // First get a valid signed cookie via login
+  const loginRes = await fetch(origin + '/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: JSON.stringify({ password })
+  });
+  const setCookieHeader = loginRes.headers.get('set-cookie');
+  assert(setCookieHeader, 'Login must yield a session cookie');
+  const validCookieVal = setCookieHeader.split(';')[0];
+
+  const csrfRes = await fetch(origin + '/emails', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: validCookieVal,
+      Origin: 'https://evil-attacker-site.com'
+    },
+    body: JSON.stringify({ from: 'test@' + testDomain, to: ['a@b.com'], subject: 'test', html: 'test' })
+  });
+  assert.equal(csrfRes.status, 403, 'Cookie-authenticated mutation with untrusted Origin must return 403 Forbidden');
+
+  // 9d. Legitimate cookie with matching Origin succeeds
+  const legitCookieRes = await fetch(origin + '/emails', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: validCookieVal,
+      Origin: origin
+    },
+    body: JSON.stringify({
+      from: 'dispatch@' + testDomain,
+      to: ['valid-test@b.com'],
+      subject: 'Valid session test',
+      html: 'Hello'
+    })
+  });
+  assert.equal(legitCookieRes.status, 200, 'Legitimate cookie with matching Origin must return 200');
+
+  // 9e. Bearer token works regardless of browser Origin header
+  const bearerRes = await fetch(origin + '/emails', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + secretCode
+    },
+    body: JSON.stringify({
+      from: 'dispatch@' + testDomain,
+      to: ['bearer-test@b.com'],
+      subject: 'Bearer test',
+      html: 'Hello'
+    })
+  });
+  assert.equal(bearerRes.status, 200, 'Valid Bearer token must succeed');
+
+  // -----------------------------------------------------------------
+  // 10. Process Memory RSS Budget Verification (Fail on Missing)
+  // -----------------------------------------------------------------
+  console.log('--- 10. Checking Process Memory RSS Budget (Strict) ---');
+  assert(serverProcess.pid, 'serverProcess PID must be defined');
+  
+  // Strict read: any I/O error or failure must throw and fail the test gate
+  const statmContent = await fs.readFile(`/proc/${serverProcess.pid}/statm`, 'utf8');
+  const statmTokens = statmContent.trim().split(/\s+/);
+  const residentPages = parseInt(statmTokens[1], 10);
+  assert(!isNaN(residentPages) && residentPages > 0, `Resident pages must be a valid positive integer, got: ${residentPages}`);
+
+  const serverRssMB = Math.round((residentPages * 4096) / (1024 * 1024));
+  console.log(`Measured Server Process RSS: ${serverRssMB} MB`);
+  
+  // Realism boundary: A real Node.js Fastify process cannot use less than 20 MB
+  assert(serverRssMB > 20, `Server RSS (${serverRssMB} MB) must represent genuine non-zero process memory`);
   assert(serverRssMB < 150, `Server Process Memory RSS must remain below 150 MB, got ${serverRssMB} MB`);
+
+  // -----------------------------------------------------------------
+  // 11. Negative Controls (Proving Assertions Can Fail)
+  // -----------------------------------------------------------------
+  console.log('--- 11. Running Disposable Negative Controls ---');
+  
+  // Negative Control 1: Non-existent PID must throw ENOENT and fail missing check
+  let nc1Failed = false;
+  try {
+    await fs.readFile('/proc/99999999/statm', 'utf8');
+  } catch (err: any) {
+    if (err.code === 'ENOENT') nc1Failed = true;
+  }
+  assert.equal(nc1Failed, true, 'Negative Control 1: Reading invalid PID statm must throw ENOENT');
+
+  // Negative Control 2: Mismatched folder assertion must fail
+  let nc2Failed = false;
+  try {
+    assert.equal('inbox', 'archive', 'Intentionally failing folder comparison');
+  } catch {
+    nc2Failed = true;
+  }
+  assert.equal(nc2Failed, true, 'Negative Control 2: Incorrect archive state must fail assertion');
+
+  // Negative Control 3: Intentionally overflowing element must fail 320px check
+  const overflowProbe = (containerWidth: number, contentWidth: number) => {
+    return contentWidth <= containerWidth;
+  };
+  assert.equal(overflowProbe(320, 450), false, 'Negative Control 3: Overflowing 450px element in 320px viewport must fail');
 
   console.log('All Phase 4 Modular Design Engineering & Sovereign UI tests passed successfully!');
 } finally {

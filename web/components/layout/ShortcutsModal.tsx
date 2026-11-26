@@ -8,10 +8,12 @@ export interface ShortcutsModalProps {
 }
 
 const SHORTCUTS = [
-  { key: 'j / k', desc: 'Navigate to next / previous email in the message list' },
+  { key: 'j / k or ↓ / ↑', desc: 'Navigate to next / previous email in the message list' },
   { key: 'Enter', desc: 'Open and inspect the focused email' },
   { key: 'e', desc: 'Archive selected email' },
-  { key: '#', desc: 'Move selected email to Trash' },
+  { key: '# or Del', desc: 'Move selected email to Trash' },
+  { key: 's', desc: 'Toggle starred status on selected or open email' },
+  { key: 'u', desc: 'Toggle unread status on selected or open email' },
   { key: 'c', desc: 'Open new Outbound Email Compose dialog' },
   { key: '/', desc: 'Instantly focus the search input' },
   { key: 'd', desc: 'Toggle density mode (Comfortable / Compact)' },
@@ -35,7 +37,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
           </div>
         ))}
       </div>
-      <div className="modal-footer">
+      <div className="modal-footer" style={{ marginTop: '1.25rem' }}>
         <button type="button" className="button primary" onClick={onClose}>
           Got it
         </button>

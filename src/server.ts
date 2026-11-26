@@ -65,15 +65,12 @@ async function getSessionFromCookie(req: FastifyRequest) {
   const rawCookie = req.cookies.session;
   if (!rawCookie) return null;
   const unsigned = req.unsignCookie(rawCookie);
-  let sessionVal: string | null = null;
-  if (unsigned.valid && unsigned.value) {
-    sessionVal = unsigned.value.startsWith('session:') ? unsigned.value.slice(8) : unsigned.value;
-  } else if (rawCookie.startsWith('session:')) {
-    sessionVal = rawCookie.slice(8);
-  } else {
-    sessionVal = rawCookie;
-  }
-  if (!sessionVal || !uuid.test(sessionVal)) return null;
+  // Strict signature verification: tampered or unsigned cookies are rejected immediately
+  if (!unsigned.valid || !unsigned.value) return null;
+  const sessionVal = unsigned.value.startsWith('session:')
+    ? unsigned.value.slice(8)
+    : unsigned.value;
+  if (!uuid.test(sessionVal)) return null;
   const { rows: [session] } = await db.query(
     'SELECT id, workspace_id FROM sessions WHERE id=$1 AND expires_at > now()',
     [sessionVal]
@@ -106,6 +103,10 @@ app.addHook('preHandler', async (req, res) => {
 
     const session = await getSessionFromCookie(req);
     if (session) {
+      // Enforce strict Origin check on cookie-authenticated mutations to prevent CSRF
+      if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== publicOrigin) {
+        return res.code(403).send({ name: 'forbidden', statusCode: 403, message: 'Origin rejected' });
+      }
       apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
       return;
     }

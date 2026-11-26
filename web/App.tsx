@@ -204,7 +204,10 @@ export function App() {
 
       if (isInput || hasOpenDialog) return;
 
-      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Strict modifier guard: never intercept native browser shortcuts (e.g. Cmd+C, Ctrl+C, Ctrl+D)
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      if (e.key === '/') {
         if (page === 'Inbox' && searchInput.current) {
           e.preventDefault();
           searchInput.current.focus();
@@ -233,7 +236,7 @@ export function App() {
       if (page === 'Inbox' && messages.length > 0) {
         const currentIndex = detail ? messages.findIndex(m => m.id === detail.id) : -1;
 
-        if (e.key === 'j') {
+        if (e.key === 'j' || e.key === 'ArrowDown') {
           // Next message
           e.preventDefault();
           const nextIndex = currentIndex < messages.length - 1 ? currentIndex + 1 : 0;
@@ -241,7 +244,7 @@ export function App() {
           return;
         }
 
-        if (e.key === 'k') {
+        if (e.key === 'k' || e.key === 'ArrowUp') {
           // Previous message
           e.preventDefault();
           const prevIndex = currentIndex > 0 ? currentIndex - 1 : messages.length - 1;
@@ -260,13 +263,35 @@ export function App() {
           return;
         }
 
-        if (e.key === '#') {
-          // Trash
+        if (e.key === '#' || e.key === 'Delete') {
+          // Move to Trash
           e.preventDefault();
           if (detail) {
             setTrashPrompt({ ids: [detail.id], bulk: false });
           } else if (selected.length) {
             setTrashPrompt({ ids: selected, bulk: true });
+          }
+          return;
+        }
+
+        if (e.key === 's') {
+          // Toggle star
+          e.preventDefault();
+          if (detail) {
+            void update([detail.id], { starred: !detail.starred });
+          } else if (selected.length) {
+            void updateSelection({ starred: true });
+          }
+          return;
+        }
+
+        if (e.key === 'u') {
+          // Toggle unread
+          e.preventDefault();
+          if (detail) {
+            void update([detail.id], { unread: !detail.unread });
+          } else if (selected.length) {
+            void updateSelection({ unread: true });
           }
           return;
         }
