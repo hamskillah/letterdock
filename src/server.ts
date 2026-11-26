@@ -685,6 +685,7 @@ app.post<{Params:{id:string}}>('/api/replay/:id',async(req,res)=>{
   if(!result.rowCount)return res.code(404).send({message:'Delivery or original message is no longer available.'});
   return {ok:true};
 });
+app.get('/health',async()=>({status:'ok',timestamp:new Date().toISOString()}));
 app.get('/api/health',async()=>{
   const {statfs}=await import('node:fs/promises');
   const disk=await statfs(process.env.DISK_PATH||'.');
