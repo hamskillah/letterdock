@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "tsx tests/unit-crypto.ts && tsx tests/unit-storage.ts && tsx tests/phase1-foundation.ts && tsx tests/phase2-worker-ingress.ts && tsx tests/integration.ts",
+    "test": "tsx tests/unit-crypto.ts && tsx tests/unit-storage.ts && tsx tests/phase1-foundation.ts && tsx tests/phase2-worker-ingress.ts && tsx tests/phase3-outbound-resend.ts && tsx tests/integration.ts",
     "build": "vite build",
     "start": "tsx src/server.ts",
     "check": "tsc --noEmit"
@@ -17,9 +17,11 @@
     "@aws-sdk/client-s3": "^3.1175.0",
     "@fastify/cookie": "^11.1.5",
     "@fastify/static": "^10.1.12",
+    "@scalar/fastify-api-reference": "^1.85.0",
     "fastify": "^5.12.8",
     "lucide-react": "^1.78.0",
     "mailparser": "^3.15.0",
+    "nodemailer": "^10.6.1",
     "pg": "^8.23.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
@@ -29,6 +31,7 @@
     "@playwright/test": "^1.65.1",
     "@types/mailparser": "^3.9.0",
     "@types/node": "^26.6.6",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
