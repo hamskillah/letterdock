@@ -48,7 +48,7 @@ try {
   await importMail(id,'sender'+('abcdefghijklmnop'.repeat(8))+'@example.net',recipient,raw);
   await importMail(id,'sender'+('abcdefghijklmnop'.repeat(8))+'@example.net',recipient,raw);
   await parseNext();
-  for(let i=0;i<50;i++){
+  for(let i=0;i<150;i++){
     try { if((await fetch(origin)).ok)break; }catch{}
     await new Promise(resolve=>setTimeout(resolve,100));
   }

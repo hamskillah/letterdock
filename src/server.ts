@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest } from 'fastify';
 import cookies, { Signer } from '@fastify/cookie';
 import files from '@fastify/static';
 import scalar from '@scalar/fastify-api-reference';
@@ -43,6 +43,23 @@ const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 const listenPort = Number(process.env.PORT || 3000);
 const publicOrigin = new URL(process.env.PUBLIC_URL || 'http://localhost:'+(process.env.APP_PORT || listenPort)).origin;
+const isAllowedOrigin = (origin: string | undefined): boolean => {
+  if (!origin) return false;
+  if (origin === publicOrigin) return true;
+  try {
+    const o = new URL(origin);
+    const p = new URL(publicOrigin);
+    if (
+      (o.hostname === 'localhost' || o.hostname === '127.0.0.1') &&
+      (p.hostname === 'localhost' || p.hostname === '127.0.0.1') &&
+      o.port === p.port &&
+      o.protocol === p.protocol
+    ) {
+      return true;
+    }
+  } catch {}
+  return false;
+};
 if (!password || password.length < 16 || !secret || secret.length < 32) throw Error('Configure ADMIN_PASSWORD and SESSION_SECRET');
 const signingKey = (purpose: string) => createHmac('sha256', secret).update('letterdock:'+purpose).digest();
 await app.register(cookies, { secret: signingKey('browser') });
@@ -61,6 +78,23 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const safeName = (name: string) => "attachment; filename*=UTF-8''" + encodeURIComponent(name).replace(/['()]/g, '_');
 
+async function getSessionFromCookie(req: FastifyRequest) {
+  const rawCookie = req.cookies.session;
+  if (!rawCookie) return null;
+  const unsigned = req.unsignCookie(rawCookie);
+  // Strict signature verification: tampered or unsigned cookies are rejected immediately
+  if (!unsigned.valid || !unsigned.value) return null;
+  const sessionVal = unsigned.value.startsWith('session:')
+    ? unsigned.value.slice(8)
+    : unsigned.value;
+  if (!uuid.test(sessionVal)) return null;
+  const { rows: [session] } = await db.query(
+    'SELECT id, workspace_id FROM sessions WHERE id=$1 AND expires_at > now()',
+    [sessionVal]
+  );
+  return session || null;
+}
+
 app.addHook('preHandler', async (req, res) => {
   const path = req.url.split('?')[0];
 
@@ -69,7 +103,7 @@ app.addHook('preHandler', async (req, res) => {
     return;
   }
 
-  // Resend API endpoints (/emails, /domains, /api-keys)
+  // Resend API endpoints (/emails, /domains, /api-keys) - accessible via Bearer API Key OR active admin session
   if (path.startsWith('/emails') || path.startsWith('/domains') || path.startsWith('/api-keys')) {
     res.header('Cache-Control', 'no-store');
     const auth = req.headers.authorization;
@@ -83,7 +117,18 @@ app.addHook('preHandler', async (req, res) => {
         return;
       }
     }
-    return res.code(401).send({ name: 'validation_error', statusCode: 401, message: 'Invalid API key' });
+
+    const session = await getSessionFromCookie(req);
+    if (session) {
+      // Enforce strict Origin check on cookie-authenticated mutations to prevent CSRF
+      if (!['GET', 'HEAD'].includes(req.method) && !isAllowedOrigin(req.headers.origin)) {
+        return res.code(403).send({ name: 'forbidden', statusCode: 403, message: 'Origin rejected' });
+      }
+      apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
+      return;
+    }
+
+    return res.code(401).send({ name: 'validation_error', statusCode: 401, message: 'Invalid API key or session required' });
   }
 
   // Webhook endpoints for bounces & complaints (authenticated via secret, API key, or session)
@@ -109,16 +154,10 @@ app.addHook('preHandler', async (req, res) => {
       }
     }
 
-    const sessionId = req.cookies.session;
-    if (sessionId && uuid.test(sessionId)) {
-      const { rows: [session] } = await db.query(
-        'SELECT id, workspace_id FROM sessions WHERE id=$1 AND expires_at > now()',
-        [sessionId]
-      );
-      if (session) {
-        apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
-        return;
-      }
+    const session = await getSessionFromCookie(req);
+    if (session) {
+      apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
+      return;
     }
 
     return res.code(401).send({
@@ -162,7 +201,7 @@ app.addHook('preHandler', async (req, res) => {
   if (!path.startsWith('/api/')) return;
   res.header('Cache-Control', 'no-store');
 
-  if (!['GET','HEAD'].includes(req.method) && req.headers.origin !== publicOrigin) {
+  if (!['GET','HEAD'].includes(req.method) && !isAllowedOrigin(req.headers.origin)) {
     return res.code(403).send({ message: 'Origin rejected' });
   }
   if (path === '/api/login') return;
