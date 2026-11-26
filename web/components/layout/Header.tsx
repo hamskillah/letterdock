@@ -40,7 +40,14 @@ export const Header: React.FC<HeaderProps> = ({
 
       <span>Workspace</span>
       <ChevronRight size={13} aria-hidden="true" />
-      <strong className="ellipsis">{page === 'Inbox' ? heading : page}</strong>
+      {(() => {
+        const pageTitleMap: Record<string, string> = {
+          ApiKeys: 'API Keys',
+          Outbound: 'Outbound Relay'
+        };
+        const displayTitle = page === 'Inbox' ? heading : (pageTitleMap[page] || page);
+        return <strong className="ellipsis">{displayTitle}</strong>;
+      })()}
       <span className="sr-only" role="status">
         {inboxUnread > 0 ? `${inboxUnread} unread inbox messages` : 'No unread inbox messages'}
       </span>

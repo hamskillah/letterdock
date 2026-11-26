@@ -686,6 +686,56 @@ app.post<{Params:{id:string}}>('/api/replay/:id',async(req,res)=>{
   return {ok:true};
 });
 app.get('/health',async()=>({status:'ok',timestamp:new Date().toISOString()}));
+app.get('/metrics', async (req, res) => {
+  const { statfs } = await import('node:fs/promises');
+  const disk = await statfs(process.env.DISK_PATH || '.').catch(() => ({ bavail: 0, bsize: 0 }));
+  const freeBytes = Number(disk.bavail || 0) * Number(disk.bsize || 0);
+
+  const { rows: queueRows } = await db.query(
+    'SELECT state, count(*)::int AS count FROM messages GROUP BY state'
+  ).catch(() => ({ rows: [] as any[] }));
+
+  const { rows: outboundRows } = await db.query(
+    'SELECT status, count(*)::int AS count FROM outbound_messages GROUP BY status'
+  ).catch(() => ({ rows: [] as any[] }));
+
+  const { rows: [{ count: totalMessages }] } = await db.query(
+    'SELECT count(*)::int AS count FROM messages'
+  ).catch(() => ({ rows: [{ count: 0 }] }));
+
+  const pendingWorkerJobs = queueRows.find(r => r.state === 'pending')?.count || 0;
+  const processRssBytes = process.memoryUsage().rss;
+
+  const lines = [
+    '# HELP letterdock_up Whether Letterdock server is running',
+    '# TYPE letterdock_up gauge',
+    'letterdock_up 1',
+    '',
+    '# HELP letterdock_process_resident_memory_bytes Process RSS memory in bytes',
+    '# TYPE letterdock_process_resident_memory_bytes gauge',
+    `letterdock_process_resident_memory_bytes ${processRssBytes}`,
+    '',
+    '# HELP letterdock_messages_total Total messages received and stored',
+    '# TYPE letterdock_messages_total counter',
+    `letterdock_messages_total ${totalMessages}`,
+    '',
+    '# HELP letterdock_worker_queue_depth Pending worker jobs count',
+    '# TYPE letterdock_worker_queue_depth gauge',
+    `letterdock_worker_queue_depth ${pendingWorkerJobs}`,
+    '',
+    '# HELP letterdock_storage_free_bytes Free filesystem disk space in bytes',
+    '# TYPE letterdock_storage_free_bytes gauge',
+    `letterdock_storage_free_bytes ${freeBytes}`,
+    '',
+    '# HELP letterdock_outbound_messages_total Total outbound messages by status',
+    '# TYPE letterdock_outbound_messages_total counter',
+    ...outboundRows.map(r => `letterdock_outbound_messages_total{status="${r.status}"} ${r.count}`),
+    ''
+  ];
+
+  res.header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+  return lines.join('\n');
+});
 app.get('/api/health',async()=>{
   const {statfs}=await import('node:fs/promises');
   const disk=await statfs(process.env.DISK_PATH||'.');

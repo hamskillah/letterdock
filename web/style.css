@@ -106,19 +106,19 @@ dialog img{display:block;max-width:80vw;max-height:75vh;margin-top:.5rem}
 .brand-mark{display:block;background:none;border-radius:0;flex:none}
 .settings-heading{display:flex;gap:.85rem;align-items:center}
 .settings-heading p{margin-top:.25rem}
-.section-icon{display:grid;place-items:center;width:2.75rem;height:2.75rem;border:1px solid #d7e7d9;background:#e9f3e9;border-radius:10px;color:var(--accent);flex:none}
+.section-icon{display:grid;place-items:center;width:2.75rem;height:2.75rem;border:1px solid var(--line);background:var(--soft);border-radius:10px;color:var(--accent);flex:none}
 .domains-page{max-width:59rem;gap:1.15rem}
-.domain-add{padding:1rem;border:1px solid var(--line);border-radius:12px;background:#f3f7f2}
+.domain-add{padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--soft)}
 .domain-add label{flex:1;max-width:25rem;min-width:min(13rem,100%)}
-.domain-card{display:grid;gap:.9rem;padding:1rem;border:1px solid var(--line);border-radius:12px;overflow-wrap:anywhere}
+.domain-card{display:grid;gap:.9rem;padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow-wrap:anywhere}
 .domain-title,.dns-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem}
-.domain-title h2{margin-bottom:.42rem}
-.dns-panel{padding:.8rem;background:#f1f6f0;border-radius:8px}
+.domain-title h2{margin-bottom:.42rem;color:var(--text)}
+.dns-panel{padding:.8rem;background:var(--soft);border:1px solid var(--line);border-radius:8px}
 .dns-heading{align-items:center}
-.dns-heading h3{font-size:.9rem}
+.dns-heading h3{font-size:.9rem;color:var(--text)}
 .dns-data{display:grid;grid-template-columns: minmax(0,8rem) minmax(0,1fr);gap:.5rem;font-size:.84rem}
 .dns-data dt{color:var(--muted)}
-.dns-data dd{margin:0}
+.dns-data dd{margin:0;color:var(--text)}
 .dns-panel p,.domain-card details{font-size:.84rem}
 .delivery-panel{display:grid;gap:.5rem}
 .delivery-panel>button{justify-self:start}
@@ -131,16 +131,16 @@ dialog img{display:block;max-width:80vw;max-height:75vh;margin-top:.5rem}
 button:disabled{cursor:default;opacity:.55}
 button:disabled:hover{background:inherit}
 button.primary:disabled:hover{background:var(--accent)}
-.danger{color:#98342d}
-.danger-action{background:#a32a27;border-color:#a32a27;color:white}
+.danger{color:var(--danger)}
+.danger-action{background:var(--danger);border-color:var(--danger);color:white}
 .danger-action:hover{background:#85221f}
-.remove-dialog{width:min(29rem,calc(100% - 2rem));padding:1.35rem}
+.remove-dialog{width:min(29rem,calc(100% - 2rem));padding:1.35rem;background:var(--surface);color:var(--text);border:1px solid var(--line)}
 .remove-dialog p{margin:.75rem 0 1.25rem;line-height:1.55}
 .remove-dialog form{justify-content:flex-end}
 .connection-card .domain-title p{font-size:.83rem;margin-top:.3rem}
 .connection-checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.6rem;margin:0}
-.connection-checks div{padding:.55rem .65rem;border:1px solid var(--line);border-radius:8px;background:#f3f7f2;font-size:.82rem}
-.connection-checks dt{font-weight:650}
+.connection-checks div{padding:.55rem .65rem;border:1px solid var(--line);border-radius:8px;background:var(--soft);font-size:.82rem}
+.connection-checks dt{font-weight:650;color:var(--text)}
 .connection-checks dd{margin:.25rem 0 0;color:var(--muted)}
 .connection-card details p{margin:.55rem 0}
 .token-form{margin-top:.7rem}
@@ -149,21 +149,21 @@ button.primary:disabled:hover{background:var(--accent)}
 .setup-hint a{color:var(--accent)}
 .addresses-page{max-width:64rem;gap:1.1rem}
 .address-add,.address-tools{display:grid;align-items:end;gap:.7rem}
-.address-add{grid-template-columns:repeat(3,minmax(0,1fr)) auto;padding:1rem;border:1px solid var(--line);border-radius:12px;background:#f3f7f2}
+.address-add{grid-template-columns:repeat(3,minmax(0,1fr)) auto;padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--soft)}
 .address-tools{grid-template-columns:minmax(0,2fr) minmax(0,1fr)}
 .addresses-page select{width:100%;min-width:0;border:1px solid var(--line);border-radius:var(--radius);padding:.6rem .65rem;background:var(--paper);color:var(--ink);font:inherit;line-height:1.25}
 .address-add label{display:block}
 .address-add label input,.address-add label select{display:block;margin-top:.36rem}
 .optional{color:var(--muted);font-weight:normal}
 .address-list{display:grid;gap:.5rem}
-.address-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.75rem;padding:.85rem 1rem;border:1px solid var(--line);border-radius:10px}
+.address-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.75rem;padding:.85rem 1rem;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
 .address-identity{display:flex;align-items:center;gap:.65rem;min-width:0}
 .address-identity svg{color:var(--accent)}
-.address-identity h2{font-size:1rem;overflow-wrap:anywhere}
+.address-identity h2{font-size:1rem;overflow-wrap:anywhere;color:var(--text)}
 .address-identity p{font-size:.81rem;margin-top:.2rem;overflow-wrap:anywhere}
 .address-count{color:var(--accent);font-size:.72rem;white-space:nowrap}
 .address-actions .icon{min-width:36px;min-height:36px}
-.address-rules{grid-column:1/-1;min-width:0;display:grid;gap:1rem;background:#f3f7f2;border:1px solid var(--line);border-radius:8px;padding:.85rem}
+.address-rules{grid-column:1/-1;min-width:0;display:grid;gap:1rem;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:.85rem}
 .address-settings-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.75rem}
 .address-settings-fields label{min-width:0;display:grid;gap:.3rem}
 .address-settings-fields input,.address-settings-fields select{width:100%;min-width:0}
@@ -191,8 +191,8 @@ button.primary:disabled:hover{background:var(--accent)}
 .sidebar nav {gap:.2rem;padding:.15rem .12rem .5rem;scrollbar-color:#9bb3a3 transparent}
 .sidebar button {color:var(--sidebar-ink);gap:.58rem;min-height:36px}
 .sidebar button svg {color:var(--sidebar-muted)}
-.sidebar button:hover {background:#edf2eb}
-.sidebar button.active {background:#e4eee4;color:#17452f;font-weight:650}
+.sidebar button:hover {background:var(--hover);color:var(--text)}
+.sidebar button.active {background:var(--selected);color:var(--accent);font-weight:650}
 .sidebar button.active {box-shadow:inset 2px 0 var(--accent)}
 .sidebar button.active svg {color:var(--accent)}
 .sidebar :focus-visible {outline:2px solid var(--accent);outline-offset:1px}
@@ -250,9 +250,10 @@ button,.button {transition:background-color 120ms ease,color 120ms ease,border-c
   justify-items:start;
   gap:.48rem;
   padding:1.15rem;
-  border:1px dashed #cbdacd;
+  border:1px dashed var(--line);
   border-radius:12px;
-  background:#edf3ee;
+  background:var(--soft);
+  color:var(--text);
 }
 .domain-empty>svg {color:var(--accent)}
 .domain-empty p {font-size:.86rem}

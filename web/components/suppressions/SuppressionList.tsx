@@ -100,7 +100,7 @@ export const SuppressionList: React.FC<{
               placeholder="Filter recipient or reason…"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              style={{ width: '220px' }}
+              style={{ minWidth: '260px' }}
             />
             <button type="button" onClick={loadSuppressions} disabled={loading}>
               Refresh
