@@ -4,10 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "tsx tests/unit-crypto.ts && tsx tests/unit-storage.ts && tsx tests/phase1-foundation.ts && tsx tests/phase2-worker-ingress.ts && tsx tests/phase3-outbound-resend.ts && tsx tests/integration.ts",
-    "build": "vite build",
-    "start": "tsx src/server.ts",
-    "check": "tsc --noEmit"
+    "test": "tsx tests/unit-crypto.ts && tsx tests/unit-storage.ts && tsx tests/phase1-foundation.ts && tsx tests/phase2-worker-ingress.ts && tsx tests/phase3-outbound-resend.ts && tsx tests/phase4-ui-modular-design.ts && tsx tests/integration.ts",
+    "build": "vite build && npm run build:server",
+    "start": "node dist/server.js",
+    "check": "tsc --noEmit",
+    "build:server": "esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.js"
   },
   "keywords": [],
   "author": "",
@@ -39,6 +40,7 @@
     "resend": "6.39.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vite": "^8.3.8"
+    "vite": "^8.3.8",
+    "esbuild": "^0.25.0"
   }
 }

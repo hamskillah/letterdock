@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest } from 'fastify';
 import cookies, { Signer } from '@fastify/cookie';
 import files from '@fastify/static';
 import scalar from '@scalar/fastify-api-reference';
@@ -61,6 +61,26 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const safeName = (name: string) => "attachment; filename*=UTF-8''" + encodeURIComponent(name).replace(/['()]/g, '_');
 
+async function getSessionFromCookie(req: FastifyRequest) {
+  const rawCookie = req.cookies.session;
+  if (!rawCookie) return null;
+  const unsigned = req.unsignCookie(rawCookie);
+  let sessionVal: string | null = null;
+  if (unsigned.valid && unsigned.value) {
+    sessionVal = unsigned.value.startsWith('session:') ? unsigned.value.slice(8) : unsigned.value;
+  } else if (rawCookie.startsWith('session:')) {
+    sessionVal = rawCookie.slice(8);
+  } else {
+    sessionVal = rawCookie;
+  }
+  if (!sessionVal || !uuid.test(sessionVal)) return null;
+  const { rows: [session] } = await db.query(
+    'SELECT id, workspace_id FROM sessions WHERE id=$1 AND expires_at > now()',
+    [sessionVal]
+  );
+  return session || null;
+}
+
 app.addHook('preHandler', async (req, res) => {
   const path = req.url.split('?')[0];
 
@@ -69,7 +89,7 @@ app.addHook('preHandler', async (req, res) => {
     return;
   }
 
-  // Resend API endpoints (/emails, /domains, /api-keys)
+  // Resend API endpoints (/emails, /domains, /api-keys) - accessible via Bearer API Key OR active admin session
   if (path.startsWith('/emails') || path.startsWith('/domains') || path.startsWith('/api-keys')) {
     res.header('Cache-Control', 'no-store');
     const auth = req.headers.authorization;
@@ -83,7 +103,14 @@ app.addHook('preHandler', async (req, res) => {
         return;
       }
     }
-    return res.code(401).send({ name: 'validation_error', statusCode: 401, message: 'Invalid API key' });
+
+    const session = await getSessionFromCookie(req);
+    if (session) {
+      apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
+      return;
+    }
+
+    return res.code(401).send({ name: 'validation_error', statusCode: 401, message: 'Invalid API key or session required' });
   }
 
   // Webhook endpoints for bounces & complaints (authenticated via secret, API key, or session)
@@ -109,16 +136,10 @@ app.addHook('preHandler', async (req, res) => {
       }
     }
 
-    const sessionId = req.cookies.session;
-    if (sessionId && uuid.test(sessionId)) {
-      const { rows: [session] } = await db.query(
-        'SELECT id, workspace_id FROM sessions WHERE id=$1 AND expires_at > now()',
-        [sessionId]
-      );
-      if (session) {
-        apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
-        return;
-      }
+    const session = await getSessionFromCookie(req);
+    if (session) {
+      apiScope.set(req, { id: session.id, workspace_id: session.workspace_id, domain: null });
+      return;
     }
 
     return res.code(401).send({

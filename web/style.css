@@ -1,3 +1,8 @@
+@import './styles/tokens.css';
+@import './styles/base.css';
+@import './styles/layout.css';
+@import './styles/components.css';
+
 :root{font-family:Inter,system-ui,sans-serif;color:#182238;background:#edf2ed;font-synthesis:none;--ink:#182238;--muted:#55637b;--line:#dbe4dc;--soft:#edf1fb;--accent:#236044;--paper:#fff;--radius:8px}
 *{box-sizing:border-box}
 body{margin:0}
@@ -413,3 +418,27 @@ select {border:1px solid var(--line);border-radius:var(--radius);padding:.6rem .
 .integration-endpoint{font:500 .79rem var(--mono);overflow-wrap:anywhere}
 .settings-panel .dns-heading h2{font-size:1.1rem}
 .settings-panel .dns-heading button{flex:none}
+
+/* Density System Overrides */
+[data-density="compact"] .message-row {
+  min-height: 2.85rem !important;
+  padding-block: 0.2rem !important;
+  padding-inline: 0.55rem !important;
+}
+
+[data-density="compact"] .message-link {
+  padding-block: 0.1rem !important;
+  gap: 0.1rem !important;
+}
+
+[data-density="compact"] .message-link strong {
+  font-size: 0.82rem !important;
+}
+
+[data-density="compact"] .message-link small {
+  display: none !important;
+}
+
+[data-density="compact"] .row-meta {
+  font-size: 0.68rem !important;
+}
