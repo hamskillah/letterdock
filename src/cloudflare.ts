@@ -1,6 +1,8 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { db } from './db.js';
 import { resolveMx, resolveNs, resolveTxt } from 'node:dns/promises';
+import { encryptSecret, decryptSecret } from './crypto.js';
+
+export { encryptSecret, decryptSecret };
 
 type Action = { type: string; value?: string[] };
 type CatchAll = { enabled: boolean; actions: Action[]; source?: string };
@@ -26,25 +28,7 @@ async function cloudflare<T>(apiToken: string, path: string, method = 'GET', bod
   return data.result;
 }
 
-function encryptionKey(purpose: string) {
-  const secret = process.env.SESSION_SECRET;
-  if (!secret) throw new Error('Session secret is unavailable');
-  return createHash('sha256').update('letterdock-'+purpose+':' + secret).digest();
-}
 
-export function decryptSecret(encoded: string, purpose: string) {
-  const [iv, tag, encrypted] = encoded.split('.').map(value => Buffer.from(value, 'base64'));
-  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(purpose), iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
-}
-
-export function encryptSecret(value: string, purpose: string) {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', encryptionKey(purpose), iv);
-  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
-  return [iv, cipher.getAuthTag(), encrypted].map(part => part.toString('base64')).join('.');
-}
 
 export async function readCredential(key: string) {
   const { rows: [row] } = await db.query('SELECT value FROM settings WHERE key=$1', [key]);
