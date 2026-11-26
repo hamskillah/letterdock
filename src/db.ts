@@ -5,53 +5,97 @@ export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 export async function migrate() {
   await db.query(`
     CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value text NOT NULL);
+
+    -- Multi-Tenancy & Workspace Foundation (Implicit Zero-State)
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id text PRIMARY KEY,
+      name text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    INSERT INTO workspaces(id, name) VALUES ('default', 'Default Workspace')
+      ON CONFLICT (id) DO NOTHING;
+
+    -- Server-Side Session Management (Instant Revocation & Auditability)
+    CREATE TABLE IF NOT EXISTS sessions (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      admin_user_id text NOT NULL DEFAULT 'admin',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz NOT NULL,
+      last_seen_at timestamptz NOT NULL DEFAULT now(),
+      ip_address text,
+      user_agent text
+    );
+    CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS sessions_workspace ON sessions(workspace_id);
+
     CREATE TABLE IF NOT EXISTS domains (
       name text PRIMARY KEY, token uuid NOT NULL DEFAULT gen_random_uuid(),
       verified boolean NOT NULL DEFAULT false, last_received timestamptz, retention_days integer
     );
+    ALTER TABLE domains ADD COLUMN IF NOT EXISTS workspace_id text DEFAULT 'default' REFERENCES workspaces(id);
     ALTER TABLE domains ADD COLUMN IF NOT EXISTS removed_at timestamptz;
     ALTER TABLE domains ADD COLUMN IF NOT EXISTS prune_days integer CHECK (prune_days BETWEEN 1 AND 3650);
     ALTER TABLE domains ADD COLUMN IF NOT EXISTS delivery_test_address text;
     ALTER TABLE domains ADD COLUMN IF NOT EXISTS delivery_test_expires timestamptz;
     ALTER TABLE domains ADD COLUMN IF NOT EXISTS delivery_verified_at timestamptz;
+
     CREATE TABLE IF NOT EXISTS messages (
       id uuid PRIMARY KEY, domain text NOT NULL REFERENCES domains(name),
-      recipient text NOT NULL, sender text NOT NULL, raw bytea NOT NULL,
+      recipient text NOT NULL, sender text NOT NULL, raw bytea,
       subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '', html text NOT NULL DEFAULT '',
       headers jsonb NOT NULL DEFAULT '{}', message_id text, state text NOT NULL DEFAULT 'pending',
       error text, received timestamptz NOT NULL DEFAULT now(), unread boolean NOT NULL DEFAULT true,
       starred boolean NOT NULL DEFAULT false, folder text NOT NULL DEFAULT 'inbox',
       labels text[] NOT NULL DEFAULT '{}'
     );
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS workspace_id text DEFAULT 'default' REFERENCES workspaces(id);
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS trashed_at timestamptz;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS retention_exempt boolean NOT NULL DEFAULT false;
+    ALTER TABLE messages ALTER COLUMN raw DROP NOT NULL;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS raw_storage_key text;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS raw_checksum_sha256 text;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS raw_size_bytes bigint;
+
     UPDATE messages SET trashed_at=now() WHERE folder='trash' AND trashed_at IS NULL;
     CREATE INDEX IF NOT EXISTS messages_trash_age ON messages(trashed_at,id) WHERE folder='trash';
     CREATE INDEX IF NOT EXISTS messages_received ON messages(received DESC, id DESC);
     CREATE INDEX IF NOT EXISTS messages_domain_received ON messages(domain,received,id);
     CREATE INDEX IF NOT EXISTS messages_pending ON messages(id) WHERE state='pending';
     CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient);
+    CREATE INDEX IF NOT EXISTS messages_raw_storage_key ON messages(raw_storage_key) WHERE raw_storage_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS messages_search ON messages USING gin (
       to_tsvector('simple', sender || ' ' || recipient || ' ' || subject || ' ' || body)
     );
+
     CREATE TABLE IF NOT EXISTS attachments (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), message uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-      filename text NOT NULL, mime text NOT NULL, data bytea NOT NULL
+      filename text NOT NULL, mime text NOT NULL, data bytea
     );
+    ALTER TABLE attachments ALTER COLUMN data DROP NOT NULL;
+    ALTER TABLE attachments ADD COLUMN IF NOT EXISTS storage_key text;
+    ALTER TABLE attachments ADD COLUMN IF NOT EXISTS checksum_sha256 text;
+    ALTER TABLE attachments ADD COLUMN IF NOT EXISTS size_bytes bigint;
+
     CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message);
+    CREATE INDEX IF NOT EXISTS attachments_storage_key ON attachments(storage_key) WHERE storage_key IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS inboxes (
       address text PRIMARY KEY, name text NOT NULL DEFAULT '', pinned boolean NOT NULL DEFAULT false
     );
+    ALTER TABLE inboxes ADD COLUMN IF NOT EXISTS workspace_id text DEFAULT 'default' REFERENCES workspaces(id);
     ALTER TABLE inboxes ADD COLUMN IF NOT EXISTS removed_at timestamptz;
     CREATE TABLE IF NOT EXISTS blocks (sender text PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS api_keys (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, hash text NOT NULL UNIQUE
     );
+    ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS workspace_id text DEFAULT 'default' REFERENCES workspaces(id);
     ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS domain text REFERENCES domains(name);
     CREATE TABLE IF NOT EXISTS hooks (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(), url text NOT NULL, secret text NOT NULL,
       filter text NOT NULL DEFAULT ''
     );
+    ALTER TABLE hooks ADD COLUMN IF NOT EXISTS workspace_id text DEFAULT 'default' REFERENCES workspaces(id);
     ALTER TABLE hooks ADD COLUMN IF NOT EXISTS address_only boolean NOT NULL DEFAULT false;
     ALTER TABLE inboxes ADD COLUMN IF NOT EXISTS auto_label text;
     ALTER TABLE inboxes ADD COLUMN IF NOT EXISTS webhook_id uuid REFERENCES hooks(id) ON DELETE SET NULL;
@@ -100,6 +144,7 @@ export async function migrate() {
     CREATE TABLE IF NOT EXISTS ingest_log (
       id uuid PRIMARY KEY, recipient text NOT NULL, status text NOT NULL, time timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS workspace_id text DEFAULT 'default' REFERENCES workspaces(id);
     ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS domain text;
     ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS bytes bigint NOT NULL DEFAULT 0;
     CREATE INDEX IF NOT EXISTS ingest_log_activity ON ingest_log(domain,time DESC,id DESC);

@@ -1,5 +1,6 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
+import { storage } from './storage.js';
 import { statfs } from 'node:fs/promises';
 import { request } from 'node:https';
 import { BlockList } from 'node:net';
@@ -32,9 +33,15 @@ export async function importMail(id: string, from: string, to: string, raw: Uint
     await client.query('BEGIN');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('letterdock-ingest'))");
     const disk = await statfs(process.env.DISK_PATH || '.');
+
+    // Hybrid storage: stream raw MIME to blob storage
+    const rawKey = 'messages/raw/' + id + '.eml';
+    const rawBuf = Buffer.from(raw);
+    const storedRaw = await storage.put(rawKey, rawBuf, { contentType: 'message/rfc822' });
+
     const {rows:[outcome]} = await client.query(`
       WITH pending AS (
-        SELECT coalesce(sum(octet_length(raw)),0) * 3 AS promised FROM messages WHERE state='pending'
+        SELECT coalesce(sum(coalesce(raw_size_bytes, octet_length(raw))),0) * 3 AS promised FROM messages WHERE state='pending'
       ), decision AS (
         SELECT CASE WHEN NOT EXISTS (SELECT FROM domains WHERE name=$2 AND verified AND removed_at IS NULL) THEN 'unknown_domain'
           WHEN EXISTS (SELECT FROM blocks WHERE sender=lower($3)) THEN 'blocked'
@@ -49,8 +56,8 @@ export async function importMail(id: string, from: string, to: string, raw: Uint
         ON CONFLICT(id) DO UPDATE SET status=excluded.status,time=now()
           WHERE ingest_log.status IN ('storage_quota','domain_quota') RETURNING status
       ), stored AS (
-        INSERT INTO messages(id,domain,sender,recipient,raw)
-        SELECT $1,$2,$3,$4,$5 FROM logged WHERE status='stored' RETURNING recipient
+        INSERT INTO messages(id,domain,sender,recipient,raw,raw_storage_key,raw_checksum_sha256,raw_size_bytes)
+        SELECT $1,$2,$3,$4,$5,$12,$13,$14 FROM logged WHERE status='stored' RETURNING recipient
       ), updated AS (
         UPDATE domains SET last_received=now() WHERE name=$2 AND EXISTS (SELECT FROM stored)
       ), inbox AS (
@@ -58,8 +65,9 @@ export async function importMail(id: string, from: string, to: string, raw: Uint
         ON CONFLICT(address) DO UPDATE SET removed_at=NULL WHERE inboxes.removed_at IS NOT NULL
       )
       SELECT status FROM logged
-    `, [id,domain,from,recipient,raw.byteLength<=maxMessageBytes?Buffer.from(raw):null,raw.byteLength,
-      maxMessageBytes,dailyDomainBytes,maxDatabaseBytes,disk.bavail*disk.bsize,minFreeBytes]);
+    `, [id,domain,from,recipient,raw.byteLength<=maxMessageBytes?rawBuf:null,raw.byteLength,
+      maxMessageBytes,dailyDomainBytes,maxDatabaseBytes,disk.bavail*disk.bsize,minFreeBytes,
+      storedRaw.key, storedRaw.sha256, storedRaw.size]);
     await client.query('COMMIT');
     return outcome?.status !== 'storage_quota' && outcome?.status !== 'domain_quota';
   } catch(error) {
@@ -147,10 +155,24 @@ export async function parseNext() {
   let id: string | undefined;
   try {
     await client.query('BEGIN');
-    const { rows: [message] } = await client.query("SELECT id, raw FROM messages WHERE state='pending' ORDER BY received LIMIT 1 FOR UPDATE SKIP LOCKED");
+    const { rows: [message] } = await client.query("SELECT id, raw, raw_storage_key FROM messages WHERE state='pending' ORDER BY received LIMIT 1 FOR UPDATE SKIP LOCKED");
     if (!message) { await client.query('COMMIT'); return false; }
     id = message.id;
-    const parsed = await simpleParser(message.raw, { skipImageLinks: true });
+
+    // Dual-read raw MIME: check blob storage first, fallback to PostgreSQL bytea
+    let rawMime: Buffer | null = null;
+    if (message.raw_storage_key) {
+      const blob = await storage.get(message.raw_storage_key);
+      if (blob) rawMime = blob.data;
+    }
+    if (!rawMime && message.raw) {
+      rawMime = Buffer.isBuffer(message.raw) ? message.raw : Buffer.from(message.raw);
+    }
+    if (!rawMime) {
+      throw new Error('Raw email MIME payload missing for message: ' + id);
+    }
+
+    const parsed = await simpleParser(rawMime, { skipImageLinks: true });
     const html = parsed.html ? sanitize(parsed.html, {
       allowedTags: sanitize.defaults.allowedTags.concat(['img']),
       allowedAttributes: { a: ['href'], img: ['alt'] }
@@ -158,8 +180,16 @@ export async function parseNext() {
     await client.query("UPDATE messages SET subject=$2, body=$3, html=$4, headers=$5, message_id=$6, state='ready', error=NULL WHERE id=$1",
       [id, parsed.subject ?? '', parsed.text ?? '', html, JSON.stringify(Object.fromEntries(parsed.headers)), parsed.messageId ?? null]);
     for (const attachment of parsed.attachments) {
-      await client.query('INSERT INTO attachments(message,filename,mime,data) VALUES($1,$2,$3,$4)',
-        [id, attachment.filename ?? 'attachment', attachment.contentType, attachment.content]);
+      const attId = randomUUID();
+      const safeName = (attachment.filename ?? 'attachment')
+        .replace(/[^a-zA-Z0-9_.-]/g, '_')
+        .replace(/\.{2,}/g, '_');
+      const attKey = 'attachments/' + id + '/' + attId + '-' + safeName;
+      const attBuf = Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.from(attachment.content);
+      const stored = await storage.put(attKey, attBuf, { contentType: attachment.contentType });
+
+      await client.query('INSERT INTO attachments(id,message,filename,mime,data,storage_key,checksum_sha256,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+        [attId, id, attachment.filename ?? 'attachment', attachment.contentType, attBuf, stored.key, stored.sha256, stored.size]);
     }
     await client.query(`UPDATE domains d SET delivery_verified_at=m.received
       FROM messages m WHERE m.id=$1 AND d.name=m.domain AND d.removed_at IS NULL
@@ -288,7 +318,9 @@ export async function runJobs() {
   await Promise.allSettled([
     pull().catch(error => { stagingStatus.error = true; continuation = undefined; workerCursor = null; throw error; }),
     (async () => { for (let n=0; n<25 && await parseNext(); n++) { /* drain bounded batch */ } })(),
+    migrateLegacyStorage(10),
     db.query("DELETE FROM ingest_log WHERE time < now()-interval '30 days' AND status <> 'stored'"),
+    db.query("DELETE FROM sessions WHERE expires_at < now()"),
     db.query(`DELETE FROM deliveries WHERE id IN (
       SELECT id FROM deliveries WHERE message_removed_at<now()-interval '30 days' LIMIT 100
     )`),
@@ -297,3 +329,46 @@ export async function runJobs() {
     if (result.status === 'rejected') console.error('Background job failed', result.reason);
   }));
 }
+
+export async function migrateLegacyStorage(limit = 50): Promise<{ migratedAttachments: number, migratedMessages: number }> {
+  let migratedAttachments = 0;
+  let migratedMessages = 0;
+
+  // 1. Migrate attachments where storage_key IS NULL and data IS NOT NULL
+  const { rows: atts } = await db.query(
+    'SELECT id, message, filename, mime, data FROM attachments WHERE storage_key IS NULL AND data IS NOT NULL LIMIT $1',
+    [limit]
+  );
+  for (const att of atts) {
+    const safeName = (att.filename ?? 'attachment')
+      .replace(/[^a-zA-Z0-9_.-]/g, '_')
+      .replace(/\.{2,}/g, '_');
+    const attKey = 'attachments/' + att.message + '/' + att.id + '-' + safeName;
+    const attBuf = Buffer.isBuffer(att.data) ? att.data : Buffer.from(att.data);
+    const stored = await storage.put(attKey, attBuf, { contentType: att.mime });
+    await db.query(
+      'UPDATE attachments SET storage_key=$1, checksum_sha256=$2, size_bytes=$3 WHERE id=$4',
+      [stored.key, stored.sha256, stored.size, att.id]
+    );
+    migratedAttachments++;
+  }
+
+  // 2. Migrate messages where raw_storage_key IS NULL and raw IS NOT NULL
+  const { rows: msgs } = await db.query(
+    'SELECT id, raw FROM messages WHERE raw_storage_key IS NULL AND raw IS NOT NULL LIMIT $1',
+    [limit]
+  );
+  for (const msg of msgs) {
+    const rawKey = 'messages/raw/' + msg.id + '.eml';
+    const rawBuf = Buffer.isBuffer(msg.raw) ? msg.raw : Buffer.from(msg.raw);
+    const stored = await storage.put(rawKey, rawBuf, { contentType: 'message/rfc822' });
+    await db.query(
+      'UPDATE messages SET raw_storage_key=$1, raw_checksum_sha256=$2, raw_size_bytes=$3 WHERE id=$4',
+      [stored.key, stored.sha256, stored.size, msg.id]
+    );
+    migratedMessages++;
+  }
+
+  return { migratedAttachments, migratedMessages };
+}
+

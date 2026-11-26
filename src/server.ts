@@ -1,7 +1,8 @@
 import Fastify from 'fastify';
 import cookies, { Signer } from '@fastify/cookie';
 import files from '@fastify/static';
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { storage } from './storage.js';
 import { resolveMx, resolveTxt } from 'node:dns/promises';
 import { resolve } from 'node:path';
 import { domainToASCII } from 'node:url';
@@ -43,7 +44,23 @@ app.addHook('preHandler', async (req, res) => {
   }
   if (path === '/api/login') return;
   const session = req.unsignCookie(req.cookies.session ?? '');
-  if (!session.valid || !/^session:\d{13}$/.test(session.value ?? '') || Number(session.value?.slice(8)) <= Date.now()) return res.code(401).send({ message:'Sign in required' });
+  if (!session.valid || !session.value) return res.code(401).send({ message:'Sign in required' });
+
+  if (session.value.startsWith('session:')) {
+    const sessionVal = session.value.slice(8);
+    if (uuid.test(sessionVal)) {
+      const { rows: [activeSession] } = await db.query(
+        'SELECT id, workspace_id FROM sessions WHERE id=$1 AND expires_at > now()',
+        [sessionVal]
+      );
+      if (!activeSession) return res.code(401).send({ message:'Sign in required' });
+      return;
+    }
+    if (/^\d{13}$/.test(sessionVal) && Number(sessionVal) > Date.now()) {
+      return;
+    }
+  }
+  return res.code(401).send({ message:'Sign in required' });
 });
 
 let denied = 0;
@@ -56,11 +73,28 @@ app.post<{Body:{password?:string}}>('/api/login', async (req,res) => {
     return res.code(401).send({message:'Invalid password'});
   }
   denied=0;
-  return res.setCookie('session', 'session:'+(Date.now()+86400000), {
+  const sessionId = randomUUID();
+  const expiresAt = new Date(Date.now() + 86400000);
+  const ip = req.ip || req.socket.remoteAddress || null;
+  const ua = (req.headers['user-agent'] as string) || null;
+  await db.query(
+    'INSERT INTO sessions(id, expires_at, ip_address, user_agent) VALUES($1, $2, $3, $4)',
+    [sessionId, expiresAt, ip, ua]
+  );
+  return res.setCookie('session', 'session:'+sessionId, {
     signed:true,httpOnly:true,sameSite:'strict',secure:publicOrigin.startsWith('https:'),path:'/',maxAge:86400
   }).send({ok:true});
 });
-app.post('/api/logout', async (_req,res) => res.clearCookie('session',{path:'/'}).send({ok:true}));
+app.post('/api/logout', async (req,res) => {
+  const session = req.unsignCookie(req.cookies.session ?? '');
+  if (session.valid && session.value?.startsWith('session:')) {
+    const sessionId = session.value.slice(8);
+    if (uuid.test(sessionId)) {
+      await db.query('DELETE FROM sessions WHERE id=$1', [sessionId]);
+    }
+  }
+  return res.clearCookie('session',{path:'/'}).send({ok:true});
+});
 
 const summary = 'id,recipient,sender,subject,received,unread,starred,folder,labels,state';
 app.get<{Querystring:Record<string,string>}>('/api/messages', async req => {
@@ -88,7 +122,7 @@ app.get<{Params:{id:string}}>('/api/messages/:id', async (req,res) => {
   if(!uuid.test(req.params.id)) return res.code(404).send();
   const [data, attachments] = await Promise.all([
     db.query(`SELECT ${summary},body,html,headers,error FROM messages WHERE id=$1`,[req.params.id]),
-    db.query('SELECT id,filename,mime,octet_length(data) AS bytes FROM attachments WHERE message=$1',[req.params.id])
+    db.query('SELECT id,filename,mime,coalesce(size_bytes, octet_length(data), 0) AS bytes FROM attachments WHERE message=$1',[req.params.id])
   ]);
   if(!data.rowCount) return res.code(404).send();
   return {...data.rows[0],attachments:attachments.rows};
@@ -114,15 +148,33 @@ app.delete<{Params:{id:string}}>('/api/messages/:id',async(req,res)=>{
 });
 app.get<{Params:{id:string}}>('/api/raw/:id', async(req,res)=>{
   if(!uuid.test(req.params.id)) return res.code(404).send();
-  const {rows:[row]}=await db.query('SELECT raw FROM messages WHERE id=$1',[req.params.id]);
+  const {rows:[row]}=await db.query('SELECT raw, raw_storage_key FROM messages WHERE id=$1',[req.params.id]);
   if(!row) return res.code(404).send();
-  return res.header('Content-Disposition',safeName(req.params.id+'.eml')).type('application/octet-stream').send(row.raw);
+  let payload: Buffer | null = null;
+  if (row.raw_storage_key) {
+    const blob = await storage.get(row.raw_storage_key);
+    if (blob) payload = blob.data;
+  }
+  if (!payload && row.raw) {
+    payload = Buffer.isBuffer(row.raw) ? row.raw : Buffer.from(row.raw);
+  }
+  if (!payload) return res.code(404).send();
+  return res.header('Content-Disposition',safeName(req.params.id+'.eml')).type('application/octet-stream').send(payload);
 });
 app.get<{Params:{id:string}}>('/api/files/:id',async(req,res)=>{
   if(!uuid.test(req.params.id)) return res.code(404).send();
-  const {rows:[row]}=await db.query('SELECT filename,data FROM attachments WHERE id=$1',[req.params.id]);
+  const {rows:[row]}=await db.query('SELECT filename,data,storage_key,mime FROM attachments WHERE id=$1',[req.params.id]);
   if(!row) return res.code(404).send();
-  return res.header('Content-Disposition',safeName(row.filename)).type('application/octet-stream').send(row.data);
+  let payload: Buffer | null = null;
+  if (row.storage_key) {
+    const blob = await storage.get(row.storage_key);
+    if (blob) payload = blob.data;
+  }
+  if (!payload && row.data) {
+    payload = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data);
+  }
+  if (!payload) return res.code(404).send();
+  return res.header('Content-Disposition',safeName(row.filename)).type(row.mime || 'application/octet-stream').send(payload);
 });
 app.post<{Body:{domain?:string}}>('/api/cloudflare/oauth/start', async (req,res) => {
   try {
@@ -423,7 +475,7 @@ app.get<{Params:{id:string}}>('/emails/receiving/:id',async(req,res)=>{
   const {rows}=await db.query('SELECT id,filename,mime AS content_type FROM attachments WHERE message=$1',[row.id]);
   return {object:'email',...row,attachments:rows};
 });
-const attachmentWire="a.id,a.filename,a.mime AS content_type,octet_length(a.data) AS size,'attachment' AS content_disposition,NULL AS content_id";
+const attachmentWire="a.id,a.filename,a.mime AS content_type,coalesce(a.size_bytes, octet_length(a.data), 0) AS size,'attachment' AS content_disposition,NULL AS content_id";
 app.get<{Params:{id:string},Querystring:Record<string,string>}>('/emails/receiving/:id/attachments',async(req,res)=>{
   if(!uuid.test(req.params.id))return res.code(404).send(notFound('Email not found'));
   const {domain}=apiScope.get(req)!;
@@ -450,10 +502,19 @@ app.get<{Params:{token:string}}>('/download/:token',async(req,res)=>{
   const token=downloads.unsign(req.params.token);
   const [id,key,expires]=token.value?.split(':')??[];
   if(!token.valid||!uuid.test(id)||!uuid.test(key)||!/^\d{13}$/.test(expires)||Number(expires)<=Date.now())return res.code(404).send();
-  const {rows:[row]}=await db.query(`SELECT a.filename,a.data FROM attachments a JOIN messages m ON m.id=a.message
+  const {rows:[row]}=await db.query(`SELECT a.filename,a.data,a.storage_key,a.mime FROM attachments a JOIN messages m ON m.id=a.message
     JOIN api_keys k ON k.id=$2 AND k.domain=m.domain WHERE a.id=$1 AND ${visible}`,[id,key]);
   if(!row)return res.code(404).send();
-  return res.header('Cache-Control','no-store').header('Content-Disposition',safeName(row.filename)).type('application/octet-stream').send(row.data);
+  let payload: Buffer | null = null;
+  if (row.storage_key) {
+    const blob = await storage.get(row.storage_key);
+    if (blob) payload = blob.data;
+  }
+  if (!payload && row.data) {
+    payload = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data);
+  }
+  if (!payload) return res.code(404).send();
+  return res.header('Cache-Control','no-store').header('Content-Disposition',safeName(row.filename)).type(row.mime || 'application/octet-stream').send(payload);
 });
 
 await migrate();
