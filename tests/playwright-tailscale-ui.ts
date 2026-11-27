@@ -129,6 +129,12 @@ try {
   await page.waitForSelector('.topbar');
   await page.locator('aside.sidebar nav button:has-text("Tailscale")').click();
   await page.waitForSelector('.tailscale-view');
+
+  // Wait for async fetchStatus() hydration
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#tailscale-enabled-toggle') as HTMLInputElement | null;
+    return el && el.checked === true;
+  }, { timeout: 10000 });
   assert.equal(await page.locator('#tailscale-enabled-toggle').isChecked(), true, 'Toggle must remain enabled after reload');
   assert.equal(await page.locator('#tailscale-origin-input').inputValue(), testOriginUrl, 'Configured origin must persist after reload');
 
