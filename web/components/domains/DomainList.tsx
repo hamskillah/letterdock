@@ -2,6 +2,7 @@ import React from 'react';
 import { Globe, Trash2, ArrowUpRight } from 'lucide-react';
 import type { Domain, CloudflareConnection, CloudflareStatus } from '../../types/index.js';
 import { DeliveryPanel } from './DeliveryPanel.js';
+import { DnsRecordTable } from './DnsRecordTable.js';
 
 export interface DomainListProps {
   domains: Domain[];
@@ -15,6 +16,7 @@ export interface DomainListProps {
   onSetupDomain: (name: string) => void;
   onAuthorizeDomainConnect: (name: string) => void;
   onVerifyDns: (name: string) => void;
+  onRefresh?: () => void;
   onSaveRetention: (e: React.FormEvent<HTMLFormElement>, name: string) => void;
   onRequestPrune: (name: string, days: number) => void;
   onTurnOffPrune: (name: string) => void;
@@ -34,6 +36,7 @@ export const DomainList: React.FC<DomainListProps> = ({
   onSetupDomain,
   onAuthorizeDomainConnect,
   onVerifyDns,
+  onRefresh,
   onSaveRetention,
   onRequestPrune,
   onTurnOffPrune,
@@ -104,43 +107,39 @@ export const DomainList: React.FC<DomainListProps> = ({
 
             <DeliveryPanel domain={item} />
 
-            <div className="dns-panel">
-              <div className="dns-heading">
-                <h3>DNS records</h3>
-                <button
-                  disabled={Boolean(busy)}
-                  onClick={() => onCheckCloudflare(item.name)}
-                >
-                  Check DNS
-                </button>
+            <DnsRecordTable
+              domain={item}
+              check={check}
+              busy={busy}
+              onCheckDns={() => onCheckCloudflare(item.name)}
+              onSynced={() => {
+                if (onRefresh) onRefresh();
+              }}
+            />
+
+            {check && (
+              <div className="dns-panel public-dns-inspection">
+                <div className="dns-heading">
+                  <h3>Public DNS Resolution</h3>
+                  <span className={`badge ${check.detected ? 'badge-ok' : 'badge-neutral'}`}>
+                    {check.detected ? 'Cloudflare NS Active' : 'External / Pending NS'}
+                  </span>
+                </div>
+                <p className="dns-status-note">
+                  {check.detected
+                    ? 'Authoritative public nameservers point to Cloudflare.'
+                    : 'Public authoritative nameservers currently point to external DNS or are propagating. If you just synchronized records via Cloudflare, public DNS propagation typically completes within a few minutes.'}
+                </p>
+                <dl className="dns-data">
+                  <dt>Public Nameservers</dt>
+                  <dd>{check.dns.nameservers.join(', ') || 'None detected'}</dd>
+                  <dt>Public MX</dt>
+                  <dd>{check.dns.mx.join(', ') || 'No public MX found'}</dd>
+                  <dt>Public Verification TXT</dt>
+                  <dd>{check.dns.txtVerified ? 'Verified' : 'Pending resolution'}</dd>
+                </dl>
               </div>
-              {busy && <p role="status">{busy}</p>}
-              {check && (
-                <>
-                  <p role="status">
-                    {check.applied
-                      ? item.verified
-                        ? 'DNS verified. Send a test email.'
-                        : 'Waiting for DNS. Letterdock will retry automatically.'
-                      : check.message}
-                  </p>
-                  <details className="dns-record-details">
-                    <summary>Show record values</summary>
-                    <dl className="dns-data">
-                      <dt>Nameservers</dt>
-                      <dd>
-                        {check.detected && <strong>Cloudflare · </strong>}
-                        {check.dns.nameservers.join(', ') || 'None found'}
-                      </dd>
-                      <dt>MX</dt>
-                      <dd>{check.dns.mx.join(', ') || 'No MX records found'}</dd>
-                      <dt>Verification TXT</dt>
-                      <dd>{check.dns.txtVerified ? 'Verified' : 'Pending'}</dd>
-                    </dl>
-                  </details>
-                </>
-              )}
-            </div>
+            )}
 
             <div className="compact domain-actions">
               {item.verified && (

@@ -300,6 +300,50 @@ export const openApiSpec = {
         }
       }
     },
+    '/api/domains/{name}/cloudflare/dns': {
+      get: {
+        summary: 'Inspect live Cloudflare DNS status & record diff',
+        operationId: 'getDomainDnsStatus',
+        parameters: [
+          { name: 'name', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'token', in: 'query', required: false, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Cloudflare DNS record status and conflicts' },
+          '404': { description: 'Domain not found' },
+          '409': { description: 'Cloudflare configuration conflict' }
+        }
+      }
+    },
+    '/api/domains/{name}/cloudflare/dns/sync': {
+      post: {
+        summary: '1-Click Cloudflare DNS synchronization for sovereign email',
+        operationId: 'syncDomainDns',
+        parameters: [
+          { name: 'name', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  replaceConflictingMx: { type: 'boolean', default: false },
+                  syncSpf: { type: 'boolean', default: true },
+                  syncDmarc: { type: 'boolean', default: true },
+                  apiToken: { type: 'string' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': { description: 'DNS synchronization report and verification state' },
+          '404': { description: 'Domain not found' },
+          '409': { description: 'Conflict detected (external MX or token collision)' }
+        }
+      }
+    },
     '/api-keys': {
       get: {
         summary: 'List API keys',
