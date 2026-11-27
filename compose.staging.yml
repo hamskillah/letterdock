@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: letterdock_staging
+      POSTGRES_USER: letterdock
+      POSTGRES_PASSWORD: staging_secure_pass_456
+    volumes:
+      - staging_database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U letterdock -d letterdock_staging"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+  app:
+    build: .
+    environment:
+      ADMIN_PASSWORD: staging-admin-secure-password-1234
+      SESSION_SECRET: staging-session-secret-at-least-32-chars-long-4567
+      APP_ENCRYPTION_KEY: staging-app-encryption-key-32-bytes-long-7890
+      DATABASE_URL: postgres://letterdock:staging_secure_pass_456@db:5432/letterdock_staging
+      APP_PORT: 3030
+      PORT: 3000
+      PUBLIC_URL: http://localhost:3030
+      STORAGE_DRIVER: fs
+      STORAGE_PATH: /app/data/storage
+      OUTBOUND_PROVIDER: mock
+      WORKER_CONCURRENCY: 3
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3030:3000"
+    volumes:
+      - staging_app_data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 5
+    restart: unless-stopped
+volumes:
+  staging_database:
+  staging_app_data:

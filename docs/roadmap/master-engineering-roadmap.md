@@ -28,12 +28,12 @@ LetterDock is transforming from an inbound email prototype into a sovereign, pro
 | **D10** | **Multi-Tenancy** | Implicit Workspace Zero-State (`workspaces` relation, foreign key scoping) | ADR 0002 |
 | **D11** | **Worker Concurrency** | PostgreSQL-Native Worker Pool via `FOR UPDATE SKIP LOCKED` (Zero Redis dependency) | ADR 0002 |
 | **D12** | **Operator Experience** | Keyboard-First High-Density Inbox with Full Accessibility (Mouse/Touch/Screen Reader) | ADR 0002 |
-| **D13** | **Cryptographic Hierarchy** | Separation of `APP_ENCRYPTION_KEY` from `SESSION_SECRET` (AES-256-GCM + 96-bit nonces) | ADR 0003 |
-| **D14** | **Session Security** | Server-Side Session Registry in PostgreSQL with Instant Revocation on Logout | ADR 0003 |
-| **D15** | **Outbound Safety** | Strict Domain Verification Gate, Rate Limiting, Bounce Ingestion & Suppression List | ADR 0003 |
-| **D16** | **API Documentation** | OpenAPI 3.1 Source of Truth + Interactive Embedded Scalar UI | ADR 0003 |
-| **D17** | **Brand Identity** | "Sovereign Maritime Precision" visual language, Inter + JetBrains Mono, WCAG AA | ADR 0003 |
-| **D18** | **Disaster Recovery** | Integrated Backup/Restore Tooling with Point-in-Time Manifests & Checksum Verification | ADR 0003 |
+| **D13** | **Security & Cryptography** | Key Separation (`APP_ENCRYPTION_KEY` vs `SESSION_SECRET`, AES-256-GCM) & Server-Side Session Revocation | ADR 0003 |
+| **D14** | **Outbound Safety** | Strict Domain Verification Gate, Rate Limiting, Bounce Ingestion & Suppression List | ADR 0003 |
+| **D15** | **API Documentation** | OpenAPI 3.1 Source of Truth + Interactive Embedded Scalar UI & SDK Contract Testing | ADR 0003 |
+| **D16** | **Brand Identity** | "Sovereign Maritime Precision" visual language, Inter + JetBrains Mono, WCAG AA | ADR 0003 |
+| **D17** | **Disaster Recovery** | Integrated Backup/Restore Tooling with Point-in-Time Manifests & Checksum Verification | ADR 0003 |
+| **D18** | **Observability & Telemetry** | Embedded Lightweight Health Dashboard, Structured Pino Logging & Prometheus `/metrics` | ADR 0003 |
 | **D19** | **Release Governance** | Strict 5-Pillar Quality Release Gates & Clear Autonomous Escalation Boundaries | ADR 0003 |
 
 ---
