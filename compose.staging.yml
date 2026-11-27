@@ -31,7 +31,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:3030:3000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3030}:3000"
     volumes:
       - staging_app_data:/app/data
     healthcheck:

@@ -22,3 +22,4 @@ letterdock*.sql
 id_rsa
 id_ed25519
 artifacts/visual-audit-screenshots/
+artifacts/tailscale-screenshots/

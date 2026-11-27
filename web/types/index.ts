@@ -167,3 +167,38 @@ export interface SyncDnsReport {
   removed: Array<{ type: string; name: string; content: string; priority?: number }>;
   message: string;
 }
+
+export interface TailscaleHostInfo {
+  installed: boolean;
+  running: boolean;
+  backendState: string;
+  ips: string[];
+  ipv4: string | null;
+  ipv6: string | null;
+  hostname: string | null;
+  magicDns: string | null;
+}
+
+export interface TailscaleSettings {
+  enabled: boolean;
+  configuredOrigin: string | null;
+  mode: 'serve' | 'direct' | 'sidecar' | 'custom';
+}
+
+export interface TailscaleStatusResponse {
+  enabled: boolean;
+  detected: boolean;
+  host: TailscaleHostInfo;
+  settings: TailscaleSettings;
+  listenPort: number;
+  bindAddress: string;
+  activeOrigins: string[];
+  suggestedOrigins: string[];
+  serveCommand: string;
+}
+
+export interface TailscaleVerifyOriginResponse {
+  origin: string;
+  allowed: boolean;
+  reason: string;
+}

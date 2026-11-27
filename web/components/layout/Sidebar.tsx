@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   Key,
   Boxes,
+  Radio,
   CircleGauge,
   BookOpen,
   LogOut,
@@ -178,6 +179,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <Boxes size={17} />
             <span>Integrations</span>
+          </button>
+          <button
+            className={page === 'Tailscale' ? 'active' : ''}
+            aria-current={page === 'Tailscale' ? 'page' : undefined}
+            onClick={() => onNavigate('Tailscale')}
+          >
+            <Radio size={17} />
+            <span>Tailscale</span>
           </button>
           <button
             className={page === 'Health' ? 'active' : ''}
