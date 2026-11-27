@@ -21,6 +21,7 @@ export interface BackupManifest {
 export async function createEncryptedBackup(options?: {
   outputPath?: string;
   storageDir?: string;
+  dbUrl?: string;
 }): Promise<{ backupPath: string; manifest: BackupManifest }> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const tempDir = resolve('/tmp/antigravity', `backup-staging-${randomUUID()}`);
@@ -30,20 +31,32 @@ export async function createEncryptedBackup(options?: {
   const dbDumpPath = join(tempDir, 'database.dump');
 
   // 1. Dump Database
-  const dbUrl = process.env.DATABASE_URL;
+  const dbUrl = options?.dbUrl || process.env.DATABASE_URL;
   if (!dbUrl) throw new Error('DATABASE_URL is required to create a database backup');
+
+  let activePool = db;
+  let customPool = false;
+  if (options?.dbUrl) {
+    const pg = await import('pg');
+    activePool = new pg.default.Pool({ connectionString: options.dbUrl });
+    customPool = true;
+  }
 
   try {
     await exec('pg_dump', ['-Fc', dbUrl, '-f', dbDumpPath]);
   } catch (err) {
     // Graceful fallback to table-based SQL dump if pg_dump client binary is unavailable
-    const tables = ['workspaces', 'domains', 'inboxes', 'messages', 'attachments', 'outbound_profiles', 'outbound_messages', 'suppressions', 'api_keys', 'hooks'];
+    const tables = ['settings', 'workspaces', 'sessions', 'domains', 'inboxes', 'messages', 'attachments', 'outbound_profiles', 'outbound_messages', 'suppressions', 'api_keys', 'hooks', 'deliveries', 'job_queue'];
     const dumpData: Record<string, any[]> = {};
     for (const table of tables) {
-      const res = await db.query(`SELECT * FROM ${table}`).catch(() => ({ rows: [] }));
+      const res = await activePool.query(`SELECT * FROM ${table}`).catch(() => ({ rows: [] }));
       dumpData[table] = res.rows;
     }
     await fs.writeFile(dbDumpPath, JSON.stringify(dumpData, null, 2));
+  } finally {
+    if (customPool) {
+      await activePool.end();
+    }
   }
 
   const dbBuffer = await fs.readFile(dbDumpPath);

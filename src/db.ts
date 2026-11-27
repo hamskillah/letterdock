@@ -2,8 +2,9 @@ import pg from 'pg';
 
 export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://postgres:letterdock_test@127.0.0.1:5432/postgres' });
 
-export async function migrate() {
-  await db.query(`
+export async function migrate(targetDb?: pg.Pool | pg.Client) {
+  const pool = targetDb || db;
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value text NOT NULL);
 
     -- Multi-Tenancy & Workspace Foundation (Implicit Zero-State)

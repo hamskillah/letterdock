@@ -83,13 +83,18 @@ export async function restoreEncryptedBackup(
   }
 
   // 5. Restore Database
-  const targetDb = options?.targetDbUrl || process.env.DATABASE_URL;
-  if (targetDb) {
+  const targetDbUrl = options?.targetDbUrl || process.env.DATABASE_URL;
+  if (targetDbUrl) {
     try {
-      await exec('pg_restore', ['--clean', '--if-exists', '-d', targetDb, dbDumpPath]);
+      await exec('pg_restore', ['--clean', '--if-exists', '-d', targetDbUrl, dbDumpPath]);
     } catch {
-      // Fallback: if database.dump is json table dump
+      // Fallback: if database.dump is json table dump or pg_restore binary unavailable
+      const pgModule = await import('pg');
+      const targetPool = new pgModule.default.Pool({ connectionString: targetDbUrl });
       try {
+        const { migrate } = await import('../src/db.js');
+        await migrate(targetPool);
+
         const parsed = JSON.parse(dbBuffer.toString('utf-8'));
         for (const [table, rows] of Object.entries(parsed)) {
           for (const row of rows as any[]) {
@@ -97,10 +102,12 @@ export async function restoreEncryptedBackup(
             if (keys.length === 0) continue;
             const values = Object.values(row);
             const placeholders = keys.map((_, i) => '$' + (i + 1)).join(', ');
-            await db.query(`INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`, values).catch(() => {});
+            await targetPool.query(`INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`, values).catch(() => {});
           }
         }
-      } catch {}
+      } finally {
+        await targetPool.end();
+      }
     }
   }
 
