@@ -576,6 +576,90 @@ export const openApiSpec = {
           '200': { description: 'Complaint recorded and recipient suppressed' }
         }
       }
+    },
+    '/api/settings/tailscale': {
+      get: {
+        summary: 'Get Tailscale daemon status, configuration, and allowed origins',
+        operationId: 'getTailscaleSettings',
+        responses: {
+          '200': {
+            description: 'Current Tailscale status and configuration',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    enabled: { type: 'boolean' },
+                    detected: { type: 'boolean' },
+                    listenPort: { type: 'number' },
+                    bindAddress: { type: 'string' },
+                    serveCommand: { type: 'string' }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      post: {
+        summary: 'Update Tailscale origin authorization settings and mode',
+        operationId: 'updateTailscaleSettings',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  enabled: { type: 'boolean' },
+                  configuredOrigin: { type: 'string', nullable: true },
+                  mode: { type: 'string', enum: ['serve', 'direct', 'sidecar', 'custom'] }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': { description: 'Updated Tailscale configuration' }
+        }
+      }
+    },
+    '/api/settings/tailscale/verify-origin': {
+      post: {
+        summary: 'Test whether a browser origin is permitted under active Tailscale and CSRF policy',
+        operationId: 'verifyTailscaleOrigin',
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  origin: { type: 'string' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Origin verification result',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['origin', 'allowed', 'reason'],
+                  properties: {
+                    origin: { type: 'string' },
+                    allowed: { type: 'boolean' },
+                    reason: { type: 'string' }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 };

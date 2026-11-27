@@ -36,6 +36,7 @@ import { ApiKeyManager } from './components/apikeys/ApiKeyManager.js';
 import { AddressList } from './components/addresses/AddressList.js';
 import { IntegrationsView } from './components/integrations/IntegrationsView.js';
 import { HealthView } from './components/health/HealthView.js';
+import { TailscaleConfigView } from './components/tailscale/TailscaleConfigView.js';
 import { useDensity } from './context/DensityContext.js';
 import { trashRetentionDays } from '../src/trash-policy.js';
 
@@ -1182,6 +1183,10 @@ export function App() {
               void action(() => navigator.clipboard.writeText(credential), 'Copied')
             }
           />
+        )}
+
+        {page === 'Tailscale' && (
+          <TailscaleConfigView api={api} />
         )}
 
         {page === 'Health' && (

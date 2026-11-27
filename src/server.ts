@@ -15,6 +15,15 @@ import { importMail, deliver, runJobs, stagingStatus } from './jobs.js';
 import { workerPool } from './worker.js';
 import { openApiSpec } from './openapi.js';
 import { sendEmail, extractEmailAddress, normalizeAddressList, checkSuppression, addSuppression, removeSuppression, OutboundError } from './outbound.js';
+import {
+  isAllowedTailscaleOrigin,
+  getTailscaleSettings,
+  saveTailscaleSettings,
+  getTailscaleStatus,
+  detectTailscaleHost,
+  type TailscaleSettings,
+  type TailscaleHostInfo
+} from './tailscale.js';
 
 const app = Fastify({
   logger: true,
@@ -43,7 +52,24 @@ const password = process.env.ADMIN_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 const listenPort = Number(process.env.PORT || 3000);
 const publicOrigin = new URL(process.env.PUBLIC_URL || 'http://localhost:'+(process.env.APP_PORT || listenPort)).origin;
-const isAllowedOrigin = (origin: string | undefined): boolean => {
+
+let cachedTailscaleSettings: TailscaleSettings = {
+  enabled: process.env.TAILSCALE_ENABLED === 'true',
+  configuredOrigin: process.env.TAILSCALE_ORIGIN || null,
+  mode: (process.env.TAILSCALE_MODE as any) || 'serve'
+};
+let cachedTailscaleHost: TailscaleHostInfo = {
+  installed: false,
+  running: false,
+  backendState: 'Not initialized',
+  ips: [],
+  ipv4: null,
+  ipv6: null,
+  hostname: null,
+  magicDns: null
+};
+
+export const isAllowedOrigin = (origin: string | undefined): boolean => {
   if (!origin) return false;
   if (origin === publicOrigin) return true;
   try {
@@ -58,6 +84,13 @@ const isAllowedOrigin = (origin: string | undefined): boolean => {
       return true;
     }
   } catch {}
+
+  // Check Tailscale origin authorization
+  if (cachedTailscaleSettings.enabled) {
+    const tsCheck = isAllowedTailscaleOrigin(origin, cachedTailscaleSettings, cachedTailscaleHost);
+    if (tsCheck.allowed) return true;
+  }
+
   return false;
 };
 if (!password || password.length < 16 || !secret || secret.length < 32) throw Error('Configure ADMIN_PASSWORD and SESSION_SECRET');
@@ -243,8 +276,12 @@ app.post<{Body:{password?:string}}>('/api/login', async (req,res) => {
     'INSERT INTO sessions(id, expires_at, ip_address, user_agent) VALUES($1, $2, $3, $4)',
     [sessionId, expiresAt, ip, ua]
   );
+  const originStr = req.headers.origin || '';
+  const isTailscaleHttp = originStr.startsWith('http://100.') || (originStr.includes('.ts.net') && originStr.startsWith('http://'));
+  const isSecure = (publicOrigin.startsWith('https:') && !isTailscaleHttp) || req.protocol === 'https';
+
   return res.setCookie('session', 'session:'+sessionId, {
-    signed:true,httpOnly:true,sameSite:'strict',secure:publicOrigin.startsWith('https:'),path:'/',maxAge:86400
+    signed:true,httpOnly:true,sameSite:'lax',secure:isSecure,path:'/',maxAge:86400
   }).send({ok:true});
 });
 app.post('/api/logout', async (req,res) => {
@@ -613,6 +650,39 @@ app.post<{Params:{name:string}, Body?:{replaceConflictingMx?:boolean; syncSpf?:b
     });
   }
 });
+
+// Tailscale Configuration & Dashboard Access
+app.get('/api/settings/tailscale', async () => {
+  return await getTailscaleStatus(listenPort);
+});
+
+app.post<{Body?: {enabled?: boolean; configuredOrigin?: string | null; mode?: 'serve' | 'direct' | 'sidecar' | 'custom'}}>('/api/settings/tailscale', async (req, res) => {
+  const body = req.body || {};
+  if (body.configuredOrigin) {
+    try {
+      new URL(body.configuredOrigin);
+    } catch {
+      return res.code(400).send({ message: 'Invalid URL format for configuredOrigin' });
+    }
+  }
+  cachedTailscaleSettings = await saveTailscaleSettings(body);
+  cachedTailscaleHost = await detectTailscaleHost();
+  return await getTailscaleStatus(listenPort);
+});
+
+app.post<{Body?: {origin?: string}}>('/api/settings/tailscale/verify-origin', async (req) => {
+  const targetOrigin = req.body?.origin || req.headers.origin || '';
+  const result = isAllowedTailscaleOrigin(targetOrigin, cachedTailscaleSettings, cachedTailscaleHost);
+  const isDirectAllowed = isAllowedOrigin(targetOrigin);
+  return {
+    origin: targetOrigin,
+    allowed: isDirectAllowed,
+    reason: isDirectAllowed
+      ? (targetOrigin === publicOrigin ? 'Matches Public URL origin' : (result.reason || 'Allowed origin'))
+      : (result.reason || 'Origin rejected under current policy')
+  };
+});
+
 app.get('/api/inboxes', async () => (await db.query(`
   SELECT i.address,i.name,i.pinned,i.auto_label,i.webhook_id,i.removed_at,coalesce(counts.unread,0) AS unread
   FROM inboxes i LEFT JOIN (
@@ -1374,6 +1444,14 @@ try {
   await migration.query('ROLLBACK');
   throw error;
 } finally { migration.release(); }
+
+try {
+  cachedTailscaleSettings = await getTailscaleSettings();
+  cachedTailscaleHost = await detectTailscaleHost();
+} catch (err) {
+  app.log.warn({ err }, 'Failed to initialize Tailscale cache');
+}
+
 await app.listen({port:listenPort,host:'0.0.0.0'});
 
 // Start concurrent worker pool for high-throughput job leasing and delivery
