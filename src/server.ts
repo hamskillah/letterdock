@@ -277,7 +277,11 @@ app.post<{Body:{password?:string}}>('/api/login', async (req,res) => {
     [sessionId, expiresAt, ip, ua]
   );
   const originStr = req.headers.origin || '';
-  const isTailscaleHttp = originStr.startsWith('http://100.') || (originStr.includes('.ts.net') && originStr.startsWith('http://'));
+  const isTailscaleHttp = originStr.startsWith('http://') && (
+    originStr.startsWith('http://100.') ||
+    originStr.includes('.ts.net') ||
+    originStr.includes('fd7a:115c:a1e0')
+  );
   const isSecure = (publicOrigin.startsWith('https:') && !isTailscaleHttp) || req.protocol === 'https';
 
   return res.setCookie('session', 'session:'+sessionId, {
@@ -664,6 +668,9 @@ app.post<{Body?: {enabled?: boolean; configuredOrigin?: string | null; mode?: 's
     } catch {
       return res.code(400).send({ message: 'Invalid URL format for configuredOrigin' });
     }
+  }
+  if (body.mode && !['serve', 'direct', 'sidecar', 'custom'].includes(body.mode)) {
+    return res.code(400).send({ message: 'Invalid Tailscale mode' });
   }
   cachedTailscaleSettings = await saveTailscaleSettings(body);
   cachedTailscaleHost = await detectTailscaleHost();

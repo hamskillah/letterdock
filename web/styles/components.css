@@ -883,23 +883,32 @@ dialog::backdrop {
 /* =====================================================================
    Tailscale Access & Management (Harbor Ledger Design System)
    ===================================================================== */
-.tailscale-view {
+.panel-header-row {
   display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-  max-width: 900px;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  min-width: 0;
+  width: 100%;
 }
 
-.tailscale-view .title-with-badge {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
+.panel-header-row > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.tailscale-view {
+  min-width: 0;
+  width: 100%;
+  max-width: 900px;
+  box-sizing: border-box;
 }
 
 .tailscale-status-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .tailscale-status-grid {
@@ -907,6 +916,8 @@ dialog::backdrop {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 1rem;
   margin-top: 0.25rem;
+  min-width: 0;
+  width: 100%;
 }
 
 .status-metric {
@@ -917,6 +928,8 @@ dialog::backdrop {
   background: var(--chrome);
   border: 1px solid var(--divider);
   border-radius: var(--radius-md);
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .status-metric .metric-label {
@@ -948,6 +961,15 @@ dialog::backdrop {
   border: 1px solid var(--divider);
   border-radius: var(--radius-sm);
   padding: 0.15rem 0.45rem;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.copyable-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .copy-mini-btn {
@@ -955,6 +977,8 @@ dialog::backdrop {
   border: none;
   cursor: pointer;
   padding: 0.2rem;
+  min-width: 30px;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1088,10 +1112,20 @@ dialog::backdrop {
   color: #065f46;
 }
 
+.verify-outcome.allowed p {
+  color: #044e39;
+  opacity: 1;
+}
+
 :root[data-theme='dark'] .verify-outcome.allowed {
   background: #064e3b;
   border: 1px solid #047857;
   color: #6ee7b7;
+}
+
+:root[data-theme='dark'] .verify-outcome.allowed p {
+  color: #a7f3d0;
+  opacity: 1;
 }
 
 .verify-outcome.rejected {
@@ -1100,10 +1134,20 @@ dialog::backdrop {
   color: #991b1b;
 }
 
+.verify-outcome.rejected p {
+  color: #7f1d1d;
+  opacity: 1;
+}
+
 :root[data-theme='dark'] .verify-outcome.rejected {
   background: #450a0a;
   border: 1px solid #7f1d1d;
   color: #fca5a5;
+}
+
+:root[data-theme='dark'] .verify-outcome.rejected p {
+  color: #fecaca;
+  opacity: 1;
 }
 
 .verify-outcome strong {
@@ -1115,7 +1159,6 @@ dialog::backdrop {
 .verify-outcome p {
   margin: 0;
   font-size: 0.8rem;
-  opacity: 0.9;
 }
 
 /* Guides Tabs & Cards */
@@ -1234,11 +1277,58 @@ dialog::backdrop {
 }
 
 @media (max-width: 640px) {
+  .settings {
+    padding: 0.75rem 0.5rem;
+  }
+  .settings-panel {
+    padding: 0.85rem 0.75rem;
+    border-radius: var(--radius-md);
+  }
+  .panel-header-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .tailscale-status-grid {
+    grid-template-columns: 1fr;
+    gap: 0.65rem;
+  }
+  .copyable-pill {
+    max-width: 100%;
+    min-width: 0;
+  }
+  .copyable-pill span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+  }
+  .current-origin-card .origin-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+  }
+  .current-origin-card .origin-code {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
   .guide-tab-nav {
     flex-direction: column;
   }
   .input-with-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+  .guide-url-preview {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+  }
+  .guide-url-preview code {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-all;
   }
 }

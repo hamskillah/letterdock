@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Radio,
   Copy,
@@ -29,6 +29,33 @@ export const TailscaleConfigView: React.FC<TailscaleConfigViewProps> = ({ api })
   const [mode, setMode] = useState<'serve' | 'direct' | 'sidecar' | 'custom'>('serve');
   const [activeTab, setActiveTab] = useState<'serve' | 'direct' | 'sidecar'>('serve');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const tabs: Array<'serve' | 'direct' | 'sidecar'> = ['serve', 'direct', 'sidecar'];
+  const tabRefs = {
+    serve: useRef<HTMLButtonElement>(null),
+    direct: useRef<HTMLButtonElement>(null),
+    sidecar: useRef<HTMLButtonElement>(null)
+  };
+
+  const handleTabKeyDown = (e: React.KeyboardEvent) => {
+    const currentIndex = tabs.indexOf(activeTab);
+    let nextIndex = currentIndex;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (e.key === 'Home') {
+      nextIndex = 0;
+    } else if (e.key === 'End') {
+      nextIndex = tabs.length - 1;
+    } else {
+      return;
+    }
+    e.preventDefault();
+    const nextTab = tabs[nextIndex];
+    setActiveTab(nextTab);
+    tabRefs[nextTab].current?.focus();
+  };
 
   // Origin verification probe state
   const [verifyingOrigin, setVerifyingOrigin] = useState(false);
@@ -321,7 +348,11 @@ export const TailscaleConfigView: React.FC<TailscaleConfigViewProps> = ({ api })
           </div>
 
           {verifyResult && (
-            <div className={`verify-outcome ${verifyResult.allowed ? 'allowed' : 'rejected'}`}>
+            <div
+              className={`verify-outcome ${verifyResult.allowed ? 'allowed' : 'rejected'}`}
+              role="status"
+              aria-live="polite"
+            >
               {verifyResult.allowed ? (
                 <>
                   <CheckCircle2 size={18} className="outcome-icon" />
@@ -351,10 +382,19 @@ export const TailscaleConfigView: React.FC<TailscaleConfigViewProps> = ({ api })
           Choose the connection mode that matches your infrastructure architecture.
         </p>
 
-        <div className="guide-tab-nav" role="tablist" aria-label="Tailscale Connection Methods">
+        <div
+          className="guide-tab-nav"
+          role="tablist"
+          aria-label="Tailscale Connection Methods"
+          onKeyDown={handleTabKeyDown}
+        >
           <button
+            id="tab-serve"
             role="tab"
+            aria-controls="panel-serve"
             aria-selected={activeTab === 'serve'}
+            tabIndex={activeTab === 'serve' ? 0 : -1}
+            ref={tabRefs.serve}
             className={`guide-tab ${activeTab === 'serve' ? 'active' : ''}`}
             onClick={() => setActiveTab('serve')}
           >
@@ -362,8 +402,12 @@ export const TailscaleConfigView: React.FC<TailscaleConfigViewProps> = ({ api })
             <span>Tailscale Serve (HTTPS)</span>
           </button>
           <button
+            id="tab-direct"
             role="tab"
+            aria-controls="panel-direct"
             aria-selected={activeTab === 'direct'}
+            tabIndex={activeTab === 'direct' ? 0 : -1}
+            ref={tabRefs.direct}
             className={`guide-tab ${activeTab === 'direct' ? 'active' : ''}`}
             onClick={() => setActiveTab('direct')}
           >
@@ -371,8 +415,12 @@ export const TailscaleConfigView: React.FC<TailscaleConfigViewProps> = ({ api })
             <span>Direct Tailnet IP</span>
           </button>
           <button
+            id="tab-sidecar"
             role="tab"
+            aria-controls="panel-sidecar"
             aria-selected={activeTab === 'sidecar'}
+            tabIndex={activeTab === 'sidecar' ? 0 : -1}
+            ref={tabRefs.sidecar}
             className={`guide-tab ${activeTab === 'sidecar' ? 'active' : ''}`}
             onClick={() => setActiveTab('sidecar')}
           >
@@ -383,7 +431,13 @@ export const TailscaleConfigView: React.FC<TailscaleConfigViewProps> = ({ api })
 
         <div className="guide-tab-content">
           {activeTab === 'serve' && (
-            <div className="guide-card" role="tabpanel">
+            <div
+              id="panel-serve"
+              role="tabpanel"
+              aria-labelledby="tab-serve"
+              tabIndex={0}
+              className="guide-card"
+            >
               <div className="guide-banner recommend">
                 <Badge variant="accent">Recommended</Badge>
                 <span>Automated Let's Encrypt TLS certificates, zero open firewall ports, HTTPS by default.</span>
@@ -414,7 +468,13 @@ export const TailscaleConfigView: React.FC<TailscaleConfigViewProps> = ({ api })
           )}
 
           {activeTab === 'direct' && (
-            <div className="guide-card" role="tabpanel">
+            <div
+              id="panel-direct"
+              role="tabpanel"
+              aria-labelledby="tab-direct"
+              tabIndex={0}
+              className="guide-card"
+            >
               <p>
                 Bind Letterdock directly to your host's private Tailscale IP (100.64.0.0/10). The service remains
                 completely unreachable from the public internet and accessible only to authenticated devices on your Tailnet.
@@ -455,7 +515,13 @@ export const TailscaleConfigView: React.FC<TailscaleConfigViewProps> = ({ api })
           )}
 
           {activeTab === 'sidecar' && (
-            <div className="guide-card" role="tabpanel">
+            <div
+              id="panel-sidecar"
+              role="tabpanel"
+              aria-labelledby="tab-sidecar"
+              tabIndex={0}
+              className="guide-card"
+            >
               <p>
                 If Tailscale is not installed on your host OS, launch the turnkey Tailscale Docker container sidecar
                 alongside Letterdock using the included overlay.
