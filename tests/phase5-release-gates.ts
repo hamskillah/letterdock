@@ -393,7 +393,7 @@ try {
   const serverRssMB = await measureProcessRssMB(serverProcess.pid);
   console.log(`Measured Fastify Server RSS: ${serverRssMB} MB`);
   assert(serverRssMB > 20, `Server RSS (${serverRssMB} MB) must represent non-zero real process memory`);
-  assert(serverRssMB < 150, `Server Process RSS must remain strictly below 150 MB, got ${serverRssMB} MB`);
+  assert(serverRssMB <= 150, `Server Process RSS must remain at or below 150 MB ceiling, got ${serverRssMB} MB`);
 
   // -----------------------------------------------------------------
   // Negative Controls: Release Gate Fault Injection

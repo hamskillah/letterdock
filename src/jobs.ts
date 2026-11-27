@@ -10,6 +10,8 @@ import sanitize from 'sanitize-html';
 import { managedIngress } from './cloudflare-ingress.js';
 import { decryptSecret } from './cloudflare.js';
 import { db } from './db.js';
+import { resolveIncomingThreadId } from './threads.js';
+import { applyInboundRules } from './rules.js';
 import { trashRetentionDays } from './trash-policy.js';
 
 const bucket = process.env.R2_BUCKET;
@@ -176,7 +178,7 @@ export async function parseNext() {
   let id: string | undefined;
   try {
     await client.query('BEGIN');
-    const { rows: [message] } = await client.query("SELECT id, raw, raw_storage_key FROM messages WHERE state='pending' ORDER BY received LIMIT 1 FOR UPDATE SKIP LOCKED");
+    const { rows: [message] } = await client.query("SELECT id, domain, recipient, sender, workspace_id, raw, raw_storage_key FROM messages WHERE state='pending' ORDER BY received LIMIT 1 FOR UPDATE SKIP LOCKED");
     if (!message) { await client.query('COMMIT'); return false; }
     id = message.id;
 
@@ -198,8 +200,21 @@ export async function parseNext() {
       allowedTags: sanitize.defaults.allowedTags.concat(['img']),
       allowedAttributes: { a: ['href'], img: ['alt'] }
     }) : '';
-    await client.query("UPDATE messages SET subject=$2, body=$3, html=$4, headers=$5, message_id=$6, state='ready', error=NULL WHERE id=$1",
-      [id, parsed.subject ?? '', parsed.text ?? '', html, JSON.stringify(Object.fromEntries(parsed.headers)), parsed.messageId ?? null]);
+
+    const rawHeaders = Object.fromEntries(parsed.headers);
+    const inReplyTo = (parsed.inReplyTo || rawHeaders['in-reply-to']) as string | undefined;
+    const references = (parsed.references || rawHeaders['references']) as string | string[] | undefined;
+    const messageId = parsed.messageId || (rawHeaders['message-id'] as string | undefined);
+    const threadId = await resolveIncomingThreadId({
+      workspaceId: message.workspace_id || 'default',
+      messageId,
+      inReplyTo,
+      references,
+      id: id!
+    });
+
+    await client.query("UPDATE messages SET subject=$2, body=$3, html=$4, headers=$5, message_id=$6, thread_id=$7, state='ready', error=NULL WHERE id=$1",
+      [id, parsed.subject ?? '', parsed.text ?? '', html, JSON.stringify(rawHeaders), parsed.messageId ?? null, threadId]);
     for (const attachment of parsed.attachments) {
       const attId = randomUUID();
       const safeName = (attachment.filename ?? 'attachment')
@@ -231,6 +246,20 @@ export async function parseNext() {
       FOR KEY SHARE OF h
       ON CONFLICT DO NOTHING`, [id]);
     await client.query('COMMIT');
+
+    // Trigger Inbound Automation Rules asynchronously
+    applyInboundRules({
+      id: id!,
+      workspaceId: message.workspace_id || 'default',
+      domain: message.domain,
+      sender: message.sender,
+      recipient: message.recipient,
+      subject: parsed.subject ?? '',
+      body: parsed.text ?? '',
+      headers: rawHeaders,
+      hasAttachments: parsed.attachments.length > 0
+    }).catch(err => console.error('[Rules Engine Error]:', err));
+
     return true;
   } catch (error) {
     await client.query('ROLLBACK');

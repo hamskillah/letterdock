@@ -44,7 +44,9 @@ export const MessageDetail: React.FC<MessageDetailProps> = ({
   onRetryParsing,
   onRefreshStatus
 }) => {
-  const [view, setView] = useState<'Message' | 'Plain text' | 'Headers'>('Message');
+  const [view, setView] = useState<'Message' | 'Plain text' | 'Headers' | 'Thread'>('Message');
+  const [threadMessages, setThreadMessages] = useState<any[]>([]);
+  const [loadingThread, setLoadingThread] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<{ name: string; url: string } | null>(null);
 
   const cleanSender = senderName(detail.sender);
@@ -99,6 +101,29 @@ export const MessageDetail: React.FC<MessageDetailProps> = ({
               }
             >
               {view === 'Headers' ? 'Hide headers' : 'Headers'}
+            </button>
+            <button
+              onClick={async () => {
+                if (view === 'Thread') {
+                  setView('Message');
+                } else {
+                  setView('Thread');
+                  setLoadingThread(true);
+                  try {
+                    const res = await fetch(`/api/messages/${detail.id}/thread`);
+                    if (res.ok) {
+                      const data = await res.json();
+                      setThreadMessages(data.messages || []);
+                    }
+                  } catch (err) {
+                    console.error('Failed to load thread', err);
+                  } finally {
+                    setLoadingThread(false);
+                  }
+                }
+              }}
+            >
+              {view === 'Thread' ? 'Show single message' : 'Conversation thread'}
             </button>
             <a
               className="button"
@@ -231,6 +256,45 @@ export const MessageDetail: React.FC<MessageDetailProps> = ({
         <button onClick={() => onRefreshStatus?.(detail)}>
           Refresh processing status
         </button>
+      ) : view === 'Thread' ? (
+        <div className="thread-view" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1rem 0' }}>
+          {loadingThread ? (
+            <p style={{ color: 'var(--text-muted)', textAlign: 'center' }}>Loading conversation history...</p>
+          ) : threadMessages.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', textAlign: 'center' }}>No other messages in this conversation.</p>
+          ) : (
+            threadMessages.map((m, idx) => (
+              <div
+                key={m.id || idx}
+                style={{
+                  border: m.id === detail.id ? '2px solid var(--primary)' : '1px solid var(--border)',
+                  borderRadius: '8px',
+                  padding: '1rem',
+                  background: m.type === 'outbound' ? 'var(--bg-subtle)' : 'var(--card-bg)'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', fontSize: '0.8rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <span style={{
+                      padding: '0.1rem 0.4rem',
+                      borderRadius: '4px',
+                      fontWeight: 600,
+                      background: m.type === 'outbound' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(34, 197, 94, 0.15)',
+                      color: m.type === 'outbound' ? '#0284c7' : 'var(--success)'
+                    }}>
+                      {m.type === 'outbound' ? 'Sent (Outbound)' : 'Received (Inbound)'}
+                    </span>
+                    <strong>{m.sender}</strong> → <span>{m.recipient}</span>
+                  </div>
+                  <time style={{ color: 'var(--text-muted)' }}>{new Date(m.timestamp).toLocaleString()}</time>
+                </div>
+                <div style={{ fontSize: '0.9rem', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
+                  {m.bodySnippet || (m.html ? 'Formatted message content' : '')}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       ) : view === 'Headers' ? (
         <pre className="mono" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
           {JSON.stringify(detail.headers, null, 2)}

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import nodemailer, { type SendMailOptions } from 'nodemailer';
 import { db } from './db.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
+import { renderTemplate } from './templates.js';
+import { injectEmailTracking, recordEmailEvent } from './analytics.js';
 
 export interface SendEmailOptions {
   workspaceId?: string;
@@ -23,6 +25,12 @@ export interface SendEmailOptions {
   tags?: Array<{ name: string; value: string }>;
   idempotencyKey?: string;
   provider?: string;
+  template?: string;
+  variables?: Record<string, any>;
+  trackOpens?: boolean;
+  trackClicks?: boolean;
+  threadId?: string;
+  inReplyTo?: string;
 }
 
 export interface OutboundProfile {
@@ -517,23 +525,69 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
     }
   }
 
+  // 4b. Template Rendering Support
+  if (options.template) {
+    const { rows: [tplRow] } = await db.query(
+      'SELECT subject, html_content, text_content FROM templates WHERE workspace_id = $1 AND (slug = $2 OR id::text = $2) LIMIT 1',
+      [workspaceId, options.template]
+    );
+    if (!tplRow) {
+      throw new OutboundError(`Template '${options.template}' not found`, 404, 'not_found');
+    }
+    const rendered = renderTemplate(tplRow, options.variables || {});
+    options.subject = options.subject || rendered.subject;
+    options.html = options.html || rendered.html;
+    options.text = options.text || rendered.text;
+  }
+
+  // 4c. Threading Resolution
+  let threadId = options.threadId;
+  if (!threadId && options.inReplyTo) {
+    const cleanInReplyTo = options.inReplyTo.replace(/[<>]/g, '').trim();
+    const { rows: [parentMsg] } = await db.query(
+      'SELECT thread_id, id FROM messages WHERE workspace_id = $1 AND (message_id = $2 OR id::text = $2) LIMIT 1',
+      [workspaceId, cleanInReplyTo]
+    );
+    if (parentMsg) {
+      threadId = parentMsg.thread_id || parentMsg.id;
+    }
+  }
+
+  const outboundId = randomUUID();
+
+  // 4d. Tracking Injection (Open Pixel & Click Redirect Proxy)
+  if (options.html && (options.trackOpens || options.trackClicks)) {
+    const baseUrl = process.env.BASE_URL || 'http://127.0.0.1:3000';
+    options.html = injectEmailTracking(options.html, {
+      workspaceId,
+      messageId: outboundId,
+      outboundId,
+      recipient: toList[0] || '',
+      baseUrl,
+      trackOpens: options.trackOpens,
+      trackClicks: options.trackClicks
+    });
+  }
+
   // 5. Resolve outbound profile
   const profile = await getOutboundProfile(workspaceId, domain);
   const provider = options.provider || profile?.provider || 'mock';
   const credentials = profile?.credentials || {};
 
   // 6. Record outbound message in database (status: sending)
-  let outboundId: string;
   try {
-    const { rows: [msgRow] } = await db.query(`
+    await db.query(`
       INSERT INTO outbound_messages (
-        workspace_id, domain, idempotency_key, from_address, to_address, cc, bcc, reply_to,
-        subject, text_body, html_body, headers, tags, attachments, status, provider
+        id, workspace_id, domain, idempotency_key, from_address, to_address, cc, bcc, reply_to,
+        subject, text_body, html_body, headers, tags, attachments, status, provider,
+        thread_id, in_reply_to, track_opens, track_clicks
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8,
-        $9, $10, $11, $12, $13, $14, 'sending', $15
-      ) RETURNING id
+        $9, $10, $11, $12, $13, $14, $15, 'sending', $16,
+        $17, $18, $19, $20
+      )
     `, [
+      outboundId,
       workspaceId,
       domain,
       options.idempotencyKey ?? null,
@@ -548,9 +602,12 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
       JSON.stringify(options.headers || {}),
       JSON.stringify(options.tags || []),
       JSON.stringify(options.attachments || []),
-      provider
+      provider,
+      threadId ?? null,
+      options.inReplyTo ?? null,
+      Boolean(options.trackOpens),
+      Boolean(options.trackClicks)
     ]);
-    outboundId = msgRow.id;
   } catch (err: any) {
     // Handle concurrent identical idempotency key insert
     if (err?.code === '23505' && options.idempotencyKey) {
@@ -591,6 +648,18 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
           updated_at = now()
       WHERE id = $1
     `, [outboundId, result.providerMessageId ?? null]);
+
+    // Record delivery event
+    for (const recipient of toList) {
+      recordEmailEvent({
+        workspaceId,
+        messageId: outboundId,
+        outboundId,
+        recipient,
+        eventType: 'delivered',
+        metadata: { provider, providerMessageId: result.providerMessageId }
+      }).catch(err => console.error('[Event Record Error]:', err));
+    }
 
     return { id: outboundId };
   } catch (err) {

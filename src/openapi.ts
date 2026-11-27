@@ -72,7 +72,41 @@ export const openApiSpec = {
                 value: { type: 'string' }
               }
             }
-          }
+          },
+          template: { type: 'string', description: 'Template slug or UUID to render' },
+          variables: { type: 'object', description: 'Dynamic interpolation values for template variables' },
+          track_opens: { type: 'boolean', description: 'Enable 1x1 transparent GIF open pixel tracking' },
+          track_clicks: { type: 'boolean', description: 'Enable link rewrite for redirect click tracking' },
+          thread_id: { type: 'string', description: 'Conversation thread ID' },
+          in_reply_to: { type: 'string', description: 'RFC 5322 In-Reply-To Message-ID or UUID' }
+        }
+      },
+      Template: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          slug: { type: 'string' },
+          description: { type: 'string' },
+          subject: { type: 'string' },
+          html_content: { type: 'string' },
+          text_content: { type: 'string' },
+          variables: { type: 'array', items: { type: 'object' } },
+          sample_data: { type: 'object' },
+          created_at: { type: 'string', format: 'date-time' },
+          updated_at: { type: 'string', format: 'date-time' }
+        }
+      },
+      InboundRule: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          priority: { type: 'integer' },
+          enabled: { type: 'boolean' },
+          match_all: { type: 'boolean' },
+          conditions: { type: 'array', items: { type: 'object' } },
+          actions: { type: 'array', items: { type: 'object' } }
         }
       },
       Domain: {
@@ -658,6 +692,99 @@ export const openApiSpec = {
               }
             }
           }
+        }
+      }
+    },
+    '/templates': {
+      get: {
+        summary: 'List email templates',
+        operationId: 'listTemplates',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': { description: 'List of templates' }
+        }
+      },
+      post: {
+        summary: 'Create an email template',
+        operationId: 'createTemplate',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '201': { description: 'Created template' }
+        }
+      }
+    },
+    '/templates/{id}': {
+      get: {
+        summary: 'Get an email template by ID or slug',
+        operationId: 'getTemplate',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': { description: 'Template detail' },
+          '404': { description: 'Template not found' }
+        }
+      },
+      put: {
+        summary: 'Update an email template',
+        operationId: 'updateTemplate',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': { description: 'Updated template' }
+        }
+      },
+      delete: {
+        summary: 'Delete an email template',
+        operationId: 'deleteTemplate',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': { description: 'Template deleted' }
+        }
+      }
+    },
+    '/templates/{id}/preview': {
+      post: {
+        summary: 'Render template preview with sample or test variables',
+        operationId: 'previewTemplate',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': { description: 'Rendered preview' }
+        }
+      }
+    },
+    '/api/rules': {
+      get: {
+        summary: 'List inbound automation rules',
+        operationId: 'listRules',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': { description: 'List of rules' }
+        }
+      },
+      post: {
+        summary: 'Create an inbound automation rule',
+        operationId: 'createRule',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '201': { description: 'Created rule' }
+        }
+      }
+    },
+    '/api/threads/{id}': {
+      get: {
+        summary: 'Retrieve all messages in a conversation thread',
+        operationId: 'getConversationThread',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': { description: 'Thread message tree' }
+        }
+      }
+    },
+    '/api/analytics/overview': {
+      get: {
+        summary: 'Get aggregated email deliverability and engagement analytics',
+        operationId: 'getAnalyticsOverview',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          '200': { description: 'Analytics statistics and rates' }
         }
       }
     }

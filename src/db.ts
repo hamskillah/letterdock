@@ -234,5 +234,61 @@ export async function migrate(targetDb?: pg.Pool | pg.Client) {
     CREATE INDEX IF NOT EXISTS outbound_messages_domain ON outbound_messages(domain, created_at DESC);
     CREATE INDEX IF NOT EXISTS outbound_messages_status ON outbound_messages(status)
       WHERE status IN ('queued', 'sending');
+
+    -- Phase 6: Templates Engine, Inbound Rules & Analytics Suite
+    CREATE TABLE IF NOT EXISTS templates (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      slug text NOT NULL,
+      description text NOT NULL DEFAULT '',
+      subject text NOT NULL DEFAULT '',
+      html_content text NOT NULL DEFAULT '',
+      text_content text NOT NULL DEFAULT '',
+      variables jsonb NOT NULL DEFAULT '[]',
+      sample_data jsonb NOT NULL DEFAULT '{}',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT templates_ws_slug_key UNIQUE (workspace_id, slug)
+    );
+    CREATE INDEX IF NOT EXISTS templates_ws_slug ON templates(workspace_id, slug);
+    CREATE INDEX IF NOT EXISTS templates_ws_name ON templates(workspace_id, name);
+
+    CREATE TABLE IF NOT EXISTS inbound_rules (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      priority integer NOT NULL DEFAULT 100,
+      enabled boolean NOT NULL DEFAULT true,
+      match_all boolean NOT NULL DEFAULT true,
+      conditions jsonb NOT NULL DEFAULT '[]',
+      actions jsonb NOT NULL DEFAULT '[]',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS inbound_rules_priority ON inbound_rules(workspace_id, priority ASC, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS email_events (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      message_id text NOT NULL,
+      outbound_id uuid REFERENCES outbound_messages(id) ON DELETE SET NULL,
+      recipient text NOT NULL,
+      event_type text NOT NULL CHECK (event_type IN ('delivered', 'opened', 'clicked', 'bounced', 'complained')),
+      metadata jsonb NOT NULL DEFAULT '{}',
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS email_events_lookup ON email_events(workspace_id, message_id);
+    CREATE INDEX IF NOT EXISTS email_events_outbound ON email_events(outbound_id);
+    CREATE INDEX IF NOT EXISTS email_events_timeline ON email_events(workspace_id, event_type, created_at DESC);
+
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_id text;
+    CREATE INDEX IF NOT EXISTS messages_thread_id ON messages(workspace_id, thread_id) WHERE thread_id IS NOT NULL;
+
+    ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS thread_id text;
+    ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS in_reply_to text;
+    ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS track_opens boolean NOT NULL DEFAULT false;
+    ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS track_clicks boolean NOT NULL DEFAULT false;
+    CREATE INDEX IF NOT EXISTS outbound_messages_thread_id ON outbound_messages(workspace_id, thread_id) WHERE thread_id IS NOT NULL;
   `);
 }
