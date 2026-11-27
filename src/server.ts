@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
 import { domainToASCII } from 'node:url';
 import { completeOAuth, startOAuth, type OAuthState } from './cloudflare-oauth.js';
 import { domainConnectLink } from './domain-connect.js';
-import { connectCloudflare, connectionStatus, encryptSecret, domainSetup, SetupConflict } from './cloudflare.js';
+import { connectCloudflare, connectionStatus, encryptSecret, domainSetup, getDomainDnsStatus, syncDomainDns, SetupConflict } from './cloudflare.js';
 import { db, migrate } from './db.js';
 import { importMail, deliver, runJobs, stagingStatus } from './jobs.js';
 import { workerPool } from './worker.js';
@@ -566,13 +566,14 @@ app.get<{Params:{name:string}}>('/api/domains/:name/domain-connect',async(req,re
   try { return await domainConnectLink(domain.name,domain.token,publicOrigin); }
   catch { return res.code(502).send({message:'Cloudflare authorization could not be prepared. Try again.'}); }
 });
-app.route<{Params:{name:string}}>({
+app.route<{Params:{name:string}, Body?:{replaceMx?:boolean}}>({
   method:['GET','POST'], url:'/api/domains/:name/cloudflare',
   async handler(req,res) {
     const {rows:[domain]}=await db.query('SELECT name,token FROM domains WHERE name=$1 AND removed_at IS NULL',[req.params.name]);
     if(!domain) return res.code(404).send({message:'Domain not found'});
     try {
-      const result=await domainSetup(domain.name,domain.token,req.method==='POST');
+      const replaceMx = Boolean((req.body as any)?.replaceMx);
+      const result=await domainSetup(domain.name,domain.token,req.method==='POST', { replaceMx });
       return req.method==='POST'&&!result.ready ? res.code(409).send(result) : result;
     } catch(error) {
       if(error instanceof SetupConflict) return res.code(409).send({message:error.message});
@@ -582,6 +583,34 @@ app.route<{Params:{name:string}}>({
         ? 'Cloudflare setup returned HTTP '+status+'. Check access to Email Routing, Workers and R2, then retry.'
         : 'Cloudflare or DNS could not complete setup. Try again.'});
     }
+  }
+});
+app.get<{Params:{name:string}, Querystring:{token?:string}}>('/api/domains/:name/cloudflare/dns', async (req, res) => {
+  const { rows: [domain] } = await db.query('SELECT name, token FROM domains WHERE name=$1 AND removed_at IS NULL', [req.params.name]);
+  if (!domain) return res.code(404).send({ message: 'Domain not found' });
+  try {
+    const status = await getDomainDnsStatus(domain.name, domain.token, req.query?.token);
+    return status;
+  } catch (error) {
+    if (error instanceof SetupConflict) return res.code(409).send({ message: error.message });
+    req.log.warn({ error }, 'Failed to fetch Cloudflare DNS status');
+    return res.code(502).send({
+      message: error instanceof Error ? error.message : 'Could not query Cloudflare DNS. Check credentials.'
+    });
+  }
+});
+app.post<{Params:{name:string}, Body?:{replaceConflictingMx?:boolean; syncSpf?:boolean; syncDmarc?:boolean; apiToken?:string}}>('/api/domains/:name/cloudflare/dns/sync', async (req, res) => {
+  const { rows: [domain] } = await db.query('SELECT name, token FROM domains WHERE name=$1 AND removed_at IS NULL', [req.params.name]);
+  if (!domain) return res.code(404).send({ message: 'Domain not found' });
+  try {
+    const report = await syncDomainDns(domain.name, domain.token, req.body || {});
+    return report;
+  } catch (error) {
+    if (error instanceof SetupConflict) return res.code(409).send({ message: error.message });
+    req.log.warn({ error }, 'Failed to sync Cloudflare DNS records');
+    return res.code(502).send({
+      message: error instanceof Error ? error.message : 'Could not synchronize Cloudflare DNS records. Check credentials.'
+    });
   }
 });
 app.get('/api/inboxes', async () => (await db.query(`

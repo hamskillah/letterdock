@@ -133,3 +133,37 @@ export interface Workspace {
   id: string;
   name: string;
 }
+
+export interface DnsRecordItem {
+  id?: string;
+  type: 'TXT' | 'MX';
+  name: string;
+  expected: string;
+  expectedPriority?: number;
+  current?: string | null;
+  currentPriority?: number;
+  status: 'synced' | 'missing' | 'conflicted';
+}
+
+export interface DnsStatusReport {
+  domain: string;
+  zoneId: string;
+  zoneName: string;
+  detected: boolean;
+  canSync: boolean;
+  hasConflicts: boolean;
+  conflicts: Array<{ id?: string; type: string; name: string; content: string; priority?: number }>;
+  records: DnsRecordItem[];
+  spf: { status: 'synced' | 'missing' | 'needs_merge'; current?: string | null; expected: string };
+  dmarc: { status: 'synced' | 'missing'; current?: string | null; expected: string };
+}
+
+export interface SyncDnsReport {
+  ok: boolean;
+  domain: string;
+  zoneId: string;
+  verified: boolean;
+  synced: Array<{ record: string; type: 'TXT' | 'MX'; action: 'created' | 'updated' | 'already_synced'; content: string; priority?: number }>;
+  removed: Array<{ type: string; name: string; content: string; priority?: number }>;
+  message: string;
+}

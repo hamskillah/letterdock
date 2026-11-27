@@ -1081,6 +1081,7 @@ export function App() {
                 await refresh();
               }, 'DNS verified')
             }
+            onRefresh={() => void directory()}
             onSaveRetention={(e, name) =>
               submit(e, data =>
                 api('/domains/' + name, 'POST', {
