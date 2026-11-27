@@ -37,6 +37,10 @@
   --accent-hover: #104c60;
   --accent-active: #0e3b4a;
   --focus: #155e75;
+  --primary: #155e75;
+  --border: var(--divider);
+  --bg-subtle: var(--chrome);
+  --card-bg: var(--surface);
 
   /* Operational States */
   --success: #166534;
@@ -47,6 +51,10 @@
   --danger-bg: #fee2e2;
   --info: #1e40af;
   --info-bg: #dbeaf2;
+
+  /* Brand / State Badges */
+  --brand-mint: #dcfce7;
+  --brand-deep: #166534;
 
   /* Radii & Elevation */
   --radius-sm: 4px;
@@ -97,6 +105,10 @@
   --accent-hover: #2dd4bf;
   --accent-active: #0d9488;
   --focus: #38bdf8;
+  --primary: #14b8a6;
+  --border: var(--divider);
+  --bg-subtle: var(--chrome);
+  --card-bg: var(--surface);
 
   /* Operational States */
   --success: #22c55e;
@@ -107,6 +119,10 @@
   --danger-bg: #450a0a;
   --info: #38bdf8;
   --info-bg: #082f49;
+
+  /* Brand / State Badges */
+  --brand-mint: #052e16;
+  --brand-deep: #22c55e;
 
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
@@ -141,6 +157,10 @@
     --accent-hover: #2dd4bf;
     --accent-active: #0d9488;
     --focus: #38bdf8;
+    --primary: #14b8a6;
+    --border: var(--divider);
+    --bg-subtle: var(--chrome);
+    --card-bg: var(--surface);
 
     --success: #22c55e;
     --success-bg: #052e16;
@@ -150,6 +170,9 @@
     --danger-bg: #450a0a;
     --info: #38bdf8;
     --info-bg: #082f49;
+
+    --brand-mint: #052e16;
+    --brand-deep: #22c55e;
 
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);

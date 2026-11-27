@@ -38,17 +38,23 @@ export const Header: React.FC<HeaderProps> = ({
         {inboxUnread > 0 && <span className="mobile-unread-dot" aria-hidden="true" />}
       </button>
 
-      <span>Workspace</span>
-      <ChevronRight size={13} aria-hidden="true" />
-      {(() => {
-        const pageTitleMap: Record<string, string> = {
-          ApiKeys: 'API Keys',
-          Outbound: 'Outbound Relay',
-          Tailscale: 'Tailscale Access'
-        };
-        const displayTitle = page === 'Inbox' ? heading : (pageTitleMap[page] || page);
-        return <strong className="ellipsis">{displayTitle}</strong>;
-      })()}
+      <nav aria-label="Breadcrumb" className="breadcrumbs-nav">
+        <ol className="breadcrumbs-list">
+          <li><span>Workspace</span></li>
+          <li aria-hidden="true"><ChevronRight size={13} /></li>
+          <li>
+            {(() => {
+              const pageTitleMap: Record<string, string> = {
+                ApiKeys: 'API Keys',
+                Outbound: 'Outbound Relay',
+                Tailscale: 'Tailscale Access'
+              };
+              const displayTitle = page === 'Inbox' ? heading : (pageTitleMap[page] || page);
+              return <strong className="ellipsis" aria-current="page">{displayTitle}</strong>;
+            })()}
+          </li>
+        </ol>
+      </nav>
       <span className="sr-only" role="status">
         {inboxUnread > 0 ? `${inboxUnread} unread inbox messages` : 'No unread inbox messages'}
       </span>

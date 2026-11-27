@@ -221,8 +221,8 @@ export const TemplatesView: React.FC = () => {
                       width: '100%',
                       padding: '0.625rem 0.75rem',
                       borderRadius: '6px',
-                      background: isSelected ? 'var(--item-hover)' : 'transparent',
-                      border: isSelected ? '1px solid var(--border-focus)' : '1px solid transparent',
+                      background: isSelected ? 'var(--selected)' : 'transparent',
+                      border: isSelected ? '1px solid var(--accent)' : '1px solid transparent',
                       textAlign: 'left',
                       cursor: 'pointer'
                     }}

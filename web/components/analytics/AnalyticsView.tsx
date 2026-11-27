@@ -94,7 +94,7 @@ export const AnalyticsView: React.FC = () => {
         <div className="card" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
             <span>Clicks</span>
-            <MousePointer size={16} color="#0284c7" />
+            <MousePointer size={16} color="var(--info)" />
           </div>
           <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{totals.clicks ?? 0}</div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
@@ -141,7 +141,7 @@ export const AnalyticsView: React.FC = () => {
                     <td style={{ padding: '0.5rem', fontWeight: 600 }}>{row.day}</td>
                     <td style={{ padding: '0.5rem' }}>{row.delivered || 0}</td>
                     <td style={{ padding: '0.5rem', color: 'var(--primary)' }}>{row.opens || 0}</td>
-                    <td style={{ padding: '0.5rem', color: '#0284c7' }}>{row.clicks || 0}</td>
+                    <td style={{ padding: '0.5rem', color: 'var(--info)' }}>{row.clicks || 0}</td>
                     <td style={{ padding: '0.5rem', color: row.bounces > 0 ? 'var(--danger)' : 'inherit' }}>{row.bounces || 0}</td>
                   </tr>
                 ))}
@@ -176,12 +176,12 @@ export const AnalyticsView: React.FC = () => {
               </thead>
               <tbody>
                 {events.map((ev: any) => {
-                  let badgeBg = 'var(--bg-subtle)';
+                  let badgeBg = 'var(--hover)';
                   let badgeColor = 'var(--text)';
-                  if (ev.event_type === 'delivered') { badgeBg = 'rgba(34, 197, 94, 0.15)'; badgeColor = 'var(--success)'; }
-                  if (ev.event_type === 'opened') { badgeBg = 'rgba(14, 165, 233, 0.15)'; badgeColor = '#0284c7'; }
-                  if (ev.event_type === 'clicked') { badgeBg = 'rgba(168, 85, 247, 0.15)'; badgeColor = '#9333ea'; }
-                  if (ev.event_type === 'bounced') { badgeBg = 'rgba(239, 68, 68, 0.15)'; badgeColor = 'var(--danger)'; }
+                  if (ev.event_type === 'delivered') { badgeBg = 'var(--success-bg)'; badgeColor = 'var(--success)'; }
+                  if (ev.event_type === 'opened') { badgeBg = 'var(--info-bg)'; badgeColor = 'var(--info)'; }
+                  if (ev.event_type === 'clicked') { badgeBg = 'var(--selected)'; badgeColor = 'var(--accent)'; }
+                  if (ev.event_type === 'bounced') { badgeBg = 'var(--danger-bg)'; badgeColor = 'var(--danger)'; }
 
                   const targetUrl = ev.metadata?.targetUrl;
 

@@ -279,8 +279,8 @@ export const MessageDetail: React.FC<MessageDetailProps> = ({
                       padding: '0.1rem 0.4rem',
                       borderRadius: '4px',
                       fontWeight: 600,
-                      background: m.type === 'outbound' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(34, 197, 94, 0.15)',
-                      color: m.type === 'outbound' ? '#0284c7' : 'var(--success)'
+                      background: m.type === 'outbound' ? 'var(--info-bg)' : 'var(--success-bg)',
+                      color: m.type === 'outbound' ? 'var(--info)' : 'var(--success)'
                     }}>
                       {m.type === 'outbound' ? 'Sent (Outbound)' : 'Received (Inbound)'}
                     </span>

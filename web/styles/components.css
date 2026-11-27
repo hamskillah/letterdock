@@ -715,8 +715,8 @@ dialog::backdrop {
 }
 
 .dns-copy-btn {
-  min-width: 32px !important;
-  min-height: 32px !important;
+  min-width: 36px !important;
+  min-height: 36px !important;
   padding: 0.35rem 0.5rem !important;
   display: inline-flex !important;
   align-items: center;
@@ -743,15 +743,24 @@ dialog::backdrop {
 .dns-option-label {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.8rem;
+  gap: 0.55rem;
+  font-size: 0.82rem;
   color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
+  min-height: 44px;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+}
+
+.dns-option-label:hover {
+  background-color: var(--hover);
 }
 
 .dns-option-label input[type='checkbox'] {
   cursor: pointer;
+  width: 18px;
+  height: 18px;
   accent-color: var(--accent);
 }
 
