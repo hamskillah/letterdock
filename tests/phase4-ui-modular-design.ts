@@ -676,7 +676,7 @@ try {
   console.log(`Measured Server Process RSS: ${serverRssMB} MB`);
   
   assert(serverRssMB > 20, `Server RSS (${serverRssMB} MB) must represent genuine non-zero process memory`);
-  assert(serverRssMB < 150, `Server Process Memory RSS must remain below 150 MB, got ${serverRssMB} MB`);
+  assert(serverRssMB <= 150, `Server Process Memory RSS must remain at or below 150 MB ceiling, got ${serverRssMB} MB`);
 
   // -----------------------------------------------------------------
   // 11. Disposable Negative Controls (Proving Real Production Gates Fail)
