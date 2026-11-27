@@ -152,6 +152,34 @@
   color: var(--text-secondary);
 }
 
+.breadcrumbs-nav {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+}
+
+.breadcrumbs-list {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.breadcrumbs-list li {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.breadcrumbs-list strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .topbar-actions {
   margin-left: auto;
   display: flex;
@@ -283,7 +311,9 @@
   }
 
   .topbar > span:not(.sr-only),
-  .topbar > svg {
+  .topbar > svg,
+  .breadcrumbs-list li:first-child,
+  .breadcrumbs-list li:nth-child(2) {
     display: none;
   }
 

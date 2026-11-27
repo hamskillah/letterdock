@@ -114,7 +114,7 @@ const password = 'sync-test-password-123';
 const sessionSecret = 'sync-test-session-secret-over-32-chars-long';
 process.env.SESSION_SECRET = sessionSecret;
 
-const server = spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
+const server = spawn(process.execPath, ['dist/server.js'], {
   env: {
     ...process.env,
     DATABASE_URL: process.env.DATABASE_URL,
@@ -132,9 +132,9 @@ const server = spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
 try {
   // Wait for server to start with resilient timeout under parallel suite load
   let serverReady = false;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 150; i++) {
     try {
-      const res = await fetch(origin + '/api/health');
+      const res = await fetch(origin + '/health');
       if (res.ok || res.status === 401) {
         serverReady = true;
         break;

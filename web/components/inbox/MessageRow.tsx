@@ -102,7 +102,7 @@ export const MessageRow: React.FC<MessageRowProps> = ({
         <Star
           size={15}
           fill={message.starred ? 'currentColor' : 'none'}
-          color={message.starred ? '#eab308' : 'currentColor'}
+          color={message.starred ? 'var(--warning)' : 'currentColor'}
         />
       </button>
     </button>
