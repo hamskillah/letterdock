@@ -37,6 +37,7 @@ import { AddressList } from './components/addresses/AddressList.js';
 import { IntegrationsView } from './components/integrations/IntegrationsView.js';
 import { HealthView } from './components/health/HealthView.js';
 import { TailscaleConfigView } from './components/tailscale/TailscaleConfigView.js';
+import { ConnectedMailboxesView } from './components/mailboxes/ConnectedMailboxesView.js';
 import { TemplatesView } from './components/templates/TemplatesView.js';
 import { RulesView } from './components/rules/RulesView.js';
 import { AnalyticsView } from './components/analytics/AnalyticsView.js';
@@ -397,9 +398,16 @@ export function App() {
     directory()
       .then(() => {
         setAuthorized(true);
-        const returningDomain = new URLSearchParams(location.search).get('domainConnect');
-        const cloudflareReturn = new URLSearchParams(location.search).get('cloudflare');
-        if (returningDomain || cloudflareReturn) void navigate('Domains');
+        const params = new URLSearchParams(location.search);
+        const returningDomain = params.get('domainConnect');
+        const cloudflareReturn = params.get('cloudflare');
+        const pageParam = params.get('page');
+        const mailboxReturn = params.get('connected') || params.get('error');
+        if (returningDomain || cloudflareReturn) {
+          void navigate('Domains');
+        } else if (pageParam === 'ConnectedMailboxes' || mailboxReturn) {
+          void navigate('ConnectedMailboxes');
+        }
       })
       .catch(cause => {
         setAuthorized(false);
@@ -1198,6 +1206,10 @@ export function App() {
 
         {page === 'Analytics' && (
           <AnalyticsView />
+        )}
+
+        {page === 'ConnectedMailboxes' && (
+          <ConnectedMailboxesView api={api} />
         )}
 
         {page === 'Tailscale' && (

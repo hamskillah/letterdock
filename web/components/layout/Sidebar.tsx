@@ -17,7 +17,8 @@ import {
   X,
   LayoutTemplate,
   Sliders,
-  BarChart3
+  BarChart3,
+  Layers
 } from 'lucide-react';
 import type { Domain, Address } from '../../types/index.js';
 
@@ -143,6 +144,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <span className="nav-caption">Manage</span>
+          <button
+            className={page === 'ConnectedMailboxes' ? 'active' : ''}
+            aria-current={page === 'ConnectedMailboxes' ? 'page' : undefined}
+            onClick={() => onNavigate('ConnectedMailboxes')}
+          >
+            <Layers size={17} />
+            <span>Connected Accounts</span>
+          </button>
           <button
             className={page === 'Domains' ? 'active' : ''}
             aria-current={page === 'Domains' ? 'page' : undefined}

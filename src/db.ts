@@ -290,5 +290,43 @@ export async function migrate(targetDb?: pg.Pool | pg.Client) {
     ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS track_opens boolean NOT NULL DEFAULT false;
     ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS track_clicks boolean NOT NULL DEFAULT false;
     CREATE INDEX IF NOT EXISTS outbound_messages_thread_id ON outbound_messages(workspace_id, thread_id) WHERE thread_id IS NOT NULL;
+
+    -- Connected Mailboxes (Strict Inbound Only)
+    CREATE TABLE IF NOT EXISTS connected_mailboxes (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id text NOT NULL DEFAULT 'default' REFERENCES workspaces(id) ON DELETE CASCADE,
+      provider text NOT NULL CHECK (provider IN ('google', 'microsoft')),
+      email text NOT NULL,
+      display_name text,
+      encrypted_access_token text NOT NULL,
+      encrypted_refresh_token text NOT NULL,
+      token_expires_at timestamptz NOT NULL,
+      granted_scopes text[] NOT NULL DEFAULT '{}',
+      sync_cursor text,
+      last_synced_at timestamptz,
+      status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked', 'error')),
+      last_error text,
+      direction text NOT NULL DEFAULT 'inbound_only' CHECK (direction = 'inbound_only'),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT uq_connected_mailboxes_workspace_provider_email UNIQUE (workspace_id, provider, email)
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state text PRIMARY KEY,
+      provider text NOT NULL CHECK (provider IN ('google', 'microsoft')),
+      code_verifier text NOT NULL,
+      nonce text NOT NULL,
+      redirect_uri text NOT NULL,
+      workspace_id text NOT NULL DEFAULT 'default',
+      origin text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz NOT NULL
+    );
+
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS mailbox_id uuid REFERENCES connected_mailboxes(id) ON DELETE CASCADE;
+    CREATE INDEX IF NOT EXISTS messages_mailbox_id ON messages(mailbox_id) WHERE mailbox_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS connected_mailboxes_poll ON connected_mailboxes(status, token_expires_at);
+    CREATE INDEX IF NOT EXISTS oauth_states_expires ON oauth_states(expires_at);
   `);
 }
