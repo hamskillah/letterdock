@@ -236,30 +236,33 @@ export async function completeMailboxOAuth(options: {
   }
 
   // 3. Strict Scope Verification Gate (Defense-in-Depth against Send Permissions)
-  const grantedScopes = typeof tokenData.scope === 'string'
+  const rawScopes = typeof tokenData.scope === 'string'
     ? tokenData.scope.split(/\s+/).map(s => s.trim().toLowerCase())
     : [];
 
-  // Prohibited send / modification scopes
-  const prohibitedScopes = [
-    'https://www.googleapis.com/auth/gmail.send',
-    'https://www.googleapis.com/auth/gmail.compose',
-    'https://www.googleapis.com/auth/gmail.modify',
-    'https://mail.google.com/',
+  // Strip Microsoft Graph prefix if present for robust scope matching
+  const grantedScopes = rawScopes.map(s => s.replace(/^https:\/\/graph\.microsoft\.com\//i, ''));
+
+  // Prohibited send / modification scope patterns
+  const prohibitedPatterns = [
+    'gmail.send',
+    'gmail.compose',
+    'gmail.modify',
+    'mail.google.com',
     'mail.send',
     'mail.readwrite'
   ];
 
-  for (const prohibited of prohibitedScopes) {
-    if (grantedScopes.includes(prohibited)) {
-      throw new Error(`Security violation: Token contains unauthorized write/send permission: ${prohibited}. Connection rejected.`);
+  for (const scope of grantedScopes) {
+    if (prohibitedPatterns.some(p => scope.includes(p))) {
+      throw new Error(`Security violation: Token contains unauthorized write/send permission: ${scope}. Connection rejected.`);
     }
   }
 
   // Required read-only permission check
   const hasReadPermission = provider === 'google'
     ? grantedScopes.some(s => s.includes('gmail.readonly'))
-    : grantedScopes.some(s => s === 'mail.read');
+    : grantedScopes.some(s => s === 'mail.read' || s.endsWith('/mail.read'));
 
   if (!hasReadPermission) {
     throw new Error(`Token lacks required read-only mailbox scope for ${provider}.`);
@@ -318,11 +321,11 @@ export async function completeMailboxOAuth(options: {
     }
   }
 
-  // 6. Ensure sender domain is recorded in domains table to satisfy relational integrity
+  // 6. Ensure sender domain is recorded in domains table to satisfy relational integrity (unverified for outbound relay)
   const domainPart = userEmail.slice(userEmail.lastIndexOf('@') + 1).toLowerCase();
   await db.query(`
     INSERT INTO domains(name, verified, retention_days)
-    VALUES($1, true, 30)
+    VALUES($1, false, 30)
     ON CONFLICT (name) DO NOTHING
   `, [domainPart]);
 
@@ -502,7 +505,18 @@ export async function disconnectConnectedMailbox(mailboxId: string, deleteLocalD
   } catch {}
 
   if (deleteLocalData) {
-    // Delete raw blob payloads associated with this mailbox
+    // 1. Delete attachment binary blobs in storage
+    const { rows: atts } = await db.query(
+      'SELECT a.storage_key FROM attachments a JOIN messages m ON m.id = a.message WHERE m.mailbox_id = $1 AND a.storage_key IS NOT NULL',
+      [mailboxId]
+    );
+    for (const att of atts) {
+      if (att.storage_key) {
+        await storage.delete(att.storage_key).catch(() => {});
+      }
+    }
+
+    // 2. Delete raw blob payloads associated with this mailbox
     const { rows: msgs } = await db.query(
       'SELECT raw_storage_key FROM messages WHERE mailbox_id = $1 AND raw_storage_key IS NOT NULL',
       [mailboxId]
@@ -580,10 +594,10 @@ export async function ingestConnectedMime(options: {
   const sender = (parsed.from && 'text' in parsed.from ? parsed.from.text : 'unknown').toLowerCase();
   const domainPart = recipient.slice(recipient.lastIndexOf('@') + 1).toLowerCase() || 'connected.local';
 
-  // Ensure domain exists in domains table
+  // Ensure domain exists in domains table (unverified for outbound relay)
   await db.query(`
     INSERT INTO domains(name, verified, retention_days)
-    VALUES($1, true, 30)
+    VALUES($1, false, 30)
     ON CONFLICT (name) DO NOTHING
   `, [domainPart]);
 

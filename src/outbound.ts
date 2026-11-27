@@ -461,6 +461,10 @@ export class OutboundError extends Error {
 export async function sendEmail(options: SendEmailOptions): Promise<{ id: string }> {
   const workspaceId = options.workspaceId || 'default';
 
+  // 1. Validate From address and Domain Verification
+  const fromParsed = extractEmailAddress(options.from);
+  const domain = fromParsed.domain;
+
   // Inbound-Only Security Barrier: Connected external mailboxes (Gmail/Outlook) are strictly read-only
   const { isSenderConnectedMailbox } = await import('./connected-mailboxes.js');
   if (await isSenderConnectedMailbox(options.from, workspaceId)) {
@@ -471,9 +475,17 @@ export async function sendEmail(options: SendEmailOptions): Promise<{ id: string
     );
   }
 
-  // 1. Validate From address and Domain Verification
-  const fromParsed = extractEmailAddress(options.from);
-  const domain = fromParsed.domain;
+  const { rows: [connectedDomain] } = await db.query(
+    "SELECT 1 FROM connected_mailboxes WHERE lower(email) LIKE '%@' || $1 LIMIT 1",
+    [domain]
+  );
+  if (connectedDomain) {
+    throw new OutboundError(
+      `Domain '${domain}' is associated with connected inbound mailboxes and cannot be used for outbound sending.`,
+      400,
+      'inbound_only_mailbox'
+    );
+  }
 
   const { rows: [domainRow] } = await db.query(
     'SELECT name, verified, removed_at, workspace_id FROM domains WHERE name = $1 LIMIT 1',

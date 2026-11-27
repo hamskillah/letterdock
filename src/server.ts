@@ -819,10 +819,10 @@ app.get<{ Params: { provider: string }; Querystring: { code?: string; state?: st
 
   const { code, state, error, error_description } = req.query;
   if (error) {
-    return res.redirect('/settings?tab=mailboxes&error=' + encodeURIComponent(error_description || error));
+    return res.redirect('/?page=ConnectedMailboxes&error=' + encodeURIComponent(error_description || error));
   }
   if (!code || !state) {
-    return res.redirect('/settings?tab=mailboxes&error=' + encodeURIComponent('Missing authorization code or state.'));
+    return res.redirect('/?page=ConnectedMailboxes&error=' + encodeURIComponent('Missing authorization code or state.'));
   }
 
   try {
@@ -833,9 +833,9 @@ app.get<{ Params: { provider: string }; Querystring: { code?: string; state?: st
     });
     // Trigger initial background sync
     syncConnectedMailbox(mailbox.id).catch(e => console.error('[Initial Mailbox Sync Error]', e.message));
-    return res.redirect('/settings?tab=mailboxes&connected=' + encodeURIComponent(mailbox.email));
+    return res.redirect('/?page=ConnectedMailboxes&connected=' + encodeURIComponent(mailbox.email));
   } catch (err: any) {
-    return res.redirect('/settings?tab=mailboxes&error=' + encodeURIComponent(err.message || 'OAuth verification failed'));
+    return res.redirect('/?page=ConnectedMailboxes&error=' + encodeURIComponent(err.message || 'OAuth verification failed'));
   }
 });
 

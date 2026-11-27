@@ -16,6 +16,7 @@ import {
 } from '../src/connected-mailboxes.js';
 import { sendEmail, OutboundError } from '../src/outbound.js';
 import { encryptSecret, decryptSecret } from '../src/crypto.js';
+import { storage } from '../src/storage.js';
 
 test('OAuth Provider Config: encrypted storage and retrieval', async () => {
   await saveOAuthProviderConfig('google', 'test-client-id-123.apps.googleusercontent.com', 'test-client-secret-abc');
@@ -55,23 +56,40 @@ test('PKCE & State: startMailboxOAuth constructs secure URL with S256 challenge'
   assert(stateRow.code_verifier.length >= 43, 'PKCE verifier must be at least 43 chars');
 });
 
-test('Scope Gate: Rejects tokens with send permissions (gmail.send, Mail.Send)', async () => {
-  // Prohibited scopes list test
-  const prohibited = ['https://www.googleapis.com/auth/gmail.send', 'Mail.Send', 'mail.readwrite'];
-  for (const badScope of prohibited) {
-    const isProhibited = [
-      'https://www.googleapis.com/auth/gmail.send',
-      'https://www.googleapis.com/auth/gmail.compose',
-      'https://www.googleapis.com/auth/gmail.modify',
-      'https://mail.google.com/',
-      'mail.send',
-      'mail.readwrite'
-    ].includes(badScope.toLowerCase());
-    assert.equal(isProhibited, true, `Must reject prohibited scope ${badScope}`);
-  }
+test('Negative Control: completeMailboxOAuth rejects invalid, replayed, or expired state', async () => {
+  // 1. Invalid / non-existent state
+  await assert.rejects(
+    async () => {
+      await completeMailboxOAuth({
+        provider: 'google',
+        code: 'fake-code',
+        state: 'non-existent-state-value'
+      });
+    },
+    /Invalid or expired OAuth state parameter/
+  );
+
+  // 2. Expired state (backdated)
+  const expiredState = 'expired-state-test-12345';
+  await db.query(`
+    INSERT INTO oauth_states(state, provider, code_verifier, nonce, redirect_uri, workspace_id, expires_at)
+    VALUES($1, 'google', 'verifier123456789012345678901234567890', 'nonce', 'http://localhost/callback', 'default', now() - interval '1 minute')
+  `, [expiredState]);
+
+  await assert.rejects(
+    async () => {
+      await completeMailboxOAuth({
+        provider: 'google',
+        code: 'fake-code',
+        state: expiredState
+      });
+    },
+    /Invalid or expired OAuth state parameter/
+  );
+  await db.query('DELETE FROM oauth_states WHERE state = $1', [expiredState]);
 });
 
-test('Inbound-Only Guard: isSenderConnectedMailbox blocks connected mailboxes from sending', async () => {
+test('Inbound-Only Guard: isSenderConnectedMailbox & sendEmail blocks connected mailboxes and domains from sending', async () => {
   // 1. Manually insert a mock connected mailbox
   const mailboxEmail = 'operator-test@gmail.com';
   const encryptedToken = encryptSecret('mock-token-abc', 'oauth-token');
@@ -93,8 +111,8 @@ test('Inbound-Only Guard: isSenderConnectedMailbox blocks connected mailboxes fr
   assert.equal(await isSenderConnectedMailbox('Operator Test <operator-test@gmail.com>', 'default'), true);
   assert.equal(await isSenderConnectedMailbox('unrelated@company.com', 'default'), false);
 
-  // 3. Attempt to send an email using this address -> Must throw OutboundError with 400 status
-  let threwExpected = false;
+  // 3. Attempt to send an email using exact connected mailbox address -> Must throw OutboundError
+  let threwMailbox = false;
   try {
     await sendEmail({
       workspaceId: 'default',
@@ -105,18 +123,40 @@ test('Inbound-Only Guard: isSenderConnectedMailbox blocks connected mailboxes fr
     });
   } catch (err: any) {
     if (err instanceof OutboundError && err.statusCode === 400 && err.name === 'inbound_only_mailbox') {
-      threwExpected = true;
+      threwMailbox = true;
     } else {
       throw err;
     }
   }
-  assert.equal(threwExpected, true, 'sendEmail must reject connected mailbox address with inbound_only_mailbox error');
+  assert.equal(threwMailbox, true, 'sendEmail must reject connected mailbox address with inbound_only_mailbox error');
+
+  // 4. Attempt to send an email using a different unlisted address at the connected domain (spoof@gmail.com) -> Must also be blocked!
+  let threwDomain = false;
+  try {
+    await sendEmail({
+      workspaceId: 'default',
+      from: 'attacker-spoof@gmail.com',
+      to: 'recipient@example.com',
+      subject: 'Unauthorized Spoof Attempt',
+      text: 'This should also fail'
+    });
+  } catch (err: any) {
+    if (err instanceof OutboundError && err.statusCode === 400 && err.name === 'inbound_only_mailbox') {
+      threwDomain = true;
+    } else if (err instanceof OutboundError && err.statusCode === 403) {
+      // Also protected if domain is unverified
+      threwDomain = true;
+    } else {
+      throw err;
+    }
+  }
+  assert.equal(threwDomain, true, 'sendEmail must reject unverified/connected external domain');
 
   // Clean up
   await disconnectConnectedMailbox(created.id, true);
 });
 
-test('MIME Ingestion: Ingests raw RFC 822 email, sets mailbox_id, and avoids duplicates', async () => {
+test('MIME Ingestion & Attachment Cascade: Ingests raw RFC 822 email, sets mailbox_id, and purges blobs on disconnect', async () => {
   // 1. Create temporary test mailbox
   const encryptedToken = encryptSecret('mock-token', 'oauth-token');
   const { rows: [mb] } = await db.query(`
@@ -166,6 +206,16 @@ test('MIME Ingestion: Ingests raw RFC 822 email, sets mailbox_id, and avoids dup
   assert.equal(second.isDuplicate, true);
   assert.equal(second.id, first.id);
 
-  // Clean up
+  // 4. Test Disconnect with deleteLocalData: Verifies raw storage blob is purged
+  assert(msg.raw_storage_key);
+  const blobBefore = await storage.get(msg.raw_storage_key);
+  assert(blobBefore, 'Raw blob must exist before deletion');
+
   await disconnectConnectedMailbox(mb.id, true);
+
+  const blobAfter = await storage.get(msg.raw_storage_key);
+  assert.equal(blobAfter, null, 'Raw blob must be purged from storage when deleteLocalData=true');
+
+  const { rows: remaining } = await db.query('SELECT id FROM messages WHERE id = $1', [first.id]);
+  assert.equal(remaining.length, 0, 'Message row must be deleted');
 });

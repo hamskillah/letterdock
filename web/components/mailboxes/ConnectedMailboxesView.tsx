@@ -196,7 +196,7 @@ export const ConnectedMailboxesView: React.FC<Props> = ({ api }) => {
       </div>
 
       {/* OAuth Providers Quick Connect Grid */}
-      <div className="tailscale-status-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+      <div className="tailscale-status-grid">
         {/* Google Card */}
         <div className="status-metric" style={{ padding: '1.25rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

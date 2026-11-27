@@ -398,9 +398,16 @@ export function App() {
     directory()
       .then(() => {
         setAuthorized(true);
-        const returningDomain = new URLSearchParams(location.search).get('domainConnect');
-        const cloudflareReturn = new URLSearchParams(location.search).get('cloudflare');
-        if (returningDomain || cloudflareReturn) void navigate('Domains');
+        const params = new URLSearchParams(location.search);
+        const returningDomain = params.get('domainConnect');
+        const cloudflareReturn = params.get('cloudflare');
+        const pageParam = params.get('page');
+        const mailboxReturn = params.get('connected') || params.get('error');
+        if (returningDomain || cloudflareReturn) {
+          void navigate('Domains');
+        } else if (pageParam === 'ConnectedMailboxes' || mailboxReturn) {
+          void navigate('ConnectedMailboxes');
+        }
       })
       .catch(cause => {
         setAuthorized(false);
