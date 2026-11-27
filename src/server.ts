@@ -33,6 +33,16 @@ import {
   getAnalyticsOverview
 } from './analytics.js';
 import { evaluateRule, type InboundRule } from './rules.js';
+import {
+  getOAuthProviderConfig,
+  saveOAuthProviderConfig,
+  startMailboxOAuth,
+  completeMailboxOAuth,
+  listConnectedMailboxes,
+  syncConnectedMailbox,
+  disconnectConnectedMailbox,
+  type OAuthProvider
+} from './connected-mailboxes.js';
 
 const app = Fastify({
   logger: true,
@@ -259,6 +269,7 @@ app.addHook('preHandler', async (req, res) => {
     return res.code(403).send({ message: 'Origin rejected' });
   }
   if (path === '/api/login') return;
+  if (path.startsWith('/api/oauth/') && path.endsWith('/callback')) return;
   const session = req.unsignCookie(req.cookies.session ?? '');
   if (!session.valid || !session.value) return res.code(401).send({ message: 'Sign in required' });
 
@@ -320,7 +331,7 @@ app.post('/api/logout', async (req,res) => {
   return res.clearCookie('session',{path:'/'}).send({ok:true});
 });
 
-const summary = 'id,recipient,sender,subject,received,unread,starred,folder,labels,state,thread_id';
+const summary = 'id,recipient,sender,subject,received,unread,starred,folder,labels,state,thread_id,mailbox_id';
 app.get<{Querystring:Record<string,string>}>('/api/messages', async req => {
   const q = req.query;
   const parsedSearch = q.q ? parseSearchQuery(q.q) : null;
@@ -732,6 +743,127 @@ app.post<{Body?: {origin?: string}}>('/api/settings/tailscale/verify-origin', as
       ? (targetOrigin === publicOrigin ? 'Matches Public URL origin' : (result.reason || 'Allowed origin'))
       : (result.reason || 'Origin rejected under current policy')
   };
+});
+
+// ==========================================
+// Connected Mailboxes & OAuth Providers API
+// ==========================================
+
+app.get('/api/oauth/providers', async () => {
+  const [google, microsoft] = await Promise.all([
+    getOAuthProviderConfig('google'),
+    getOAuthProviderConfig('microsoft')
+  ]);
+  return {
+    google: {
+      configured: google.configured,
+      fromEnv: google.fromEnv,
+      clientId: google.clientId ? (google.clientId.slice(0, 12) + '...' + google.clientId.slice(-8)) : ''
+    },
+    microsoft: {
+      configured: microsoft.configured,
+      fromEnv: microsoft.fromEnv,
+      clientId: microsoft.clientId ? (microsoft.clientId.slice(0, 8) + '...' + microsoft.clientId.slice(-4)) : ''
+    }
+  };
+});
+
+app.post<{ Params: { provider: string }; Body: { clientId?: string; clientSecret?: string } }>('/api/oauth/providers/:provider', async (req, res) => {
+  const provider = req.params.provider.toLowerCase();
+  if (provider !== 'google' && provider !== 'microsoft') {
+    return res.code(400).send({ message: 'Supported providers are "google" and "microsoft".' });
+  }
+  const clientId = String(req.body?.clientId || '').trim();
+  const clientSecret = String(req.body?.clientSecret || '').trim();
+  if (!clientId || !clientSecret) {
+    return res.code(400).send({ message: 'Client ID and Client Secret are required.' });
+  }
+  await saveOAuthProviderConfig(provider as OAuthProvider, clientId, clientSecret);
+  return { ok: true, provider, configured: true };
+});
+
+app.get<{ Params: { provider: string }; Querystring: { redirectUri?: string } }>('/api/oauth/:provider/authorize', async (req, res) => {
+  const provider = req.params.provider.toLowerCase();
+  if (provider !== 'google' && provider !== 'microsoft') {
+    return res.code(400).send({ message: 'Supported providers are "google" and "microsoft".' });
+  }
+
+  const host = req.headers.host || '127.0.0.1:3000';
+  const proto = (req.headers['x-forwarded-proto'] as string) || (req.protocol === 'https' ? 'https' : (publicOrigin.startsWith('https:') ? 'https' : 'http'));
+  const fallbackRedirect = `${proto}://${host}/api/oauth/${provider}/callback`;
+  const redirectUri = req.query.redirectUri || fallbackRedirect;
+
+  try {
+    const result = await startMailboxOAuth({
+      provider: provider as OAuthProvider,
+      redirectUri,
+      workspaceId: 'default',
+      origin: req.headers.origin || `${proto}://${host}`
+    });
+
+    const acceptsHtml = req.headers.accept?.includes('text/html');
+    if (acceptsHtml) {
+      return res.redirect(result.url);
+    }
+    return { url: result.url, state: result.state };
+  } catch (err: any) {
+    return res.code(400).send({ message: err.message || 'Failed to initiate OAuth' });
+  }
+});
+
+app.get<{ Params: { provider: string }; Querystring: { code?: string; state?: string; error?: string; error_description?: string } }>('/api/oauth/:provider/callback', async (req, res) => {
+  const provider = req.params.provider.toLowerCase();
+  if (provider !== 'google' && provider !== 'microsoft') {
+    return res.code(400).send({ message: 'Invalid provider' });
+  }
+
+  const { code, state, error, error_description } = req.query;
+  if (error) {
+    return res.redirect('/settings?tab=mailboxes&error=' + encodeURIComponent(error_description || error));
+  }
+  if (!code || !state) {
+    return res.redirect('/settings?tab=mailboxes&error=' + encodeURIComponent('Missing authorization code or state.'));
+  }
+
+  try {
+    const mailbox = await completeMailboxOAuth({
+      provider: provider as OAuthProvider,
+      code,
+      state
+    });
+    // Trigger initial background sync
+    syncConnectedMailbox(mailbox.id).catch(e => console.error('[Initial Mailbox Sync Error]', e.message));
+    return res.redirect('/settings?tab=mailboxes&connected=' + encodeURIComponent(mailbox.email));
+  } catch (err: any) {
+    return res.redirect('/settings?tab=mailboxes&error=' + encodeURIComponent(err.message || 'OAuth verification failed'));
+  }
+});
+
+app.get('/api/connected-mailboxes', async () => {
+  return await listConnectedMailboxes('default');
+});
+
+app.post<{ Params: { id: string } }>('/api/connected-mailboxes/:id/sync', async (req, res) => {
+  try {
+    const result = await syncConnectedMailbox(req.params.id);
+    return { ok: true, ...result };
+  } catch (err: any) {
+    return res.code(400).send({ message: err.message || 'Sync failed' });
+  }
+});
+
+app.post<{ Params: { id: string } }>('/api/connected-mailboxes/:id/toggle', async (req, res) => {
+  const { rows: [mb] } = await db.query('SELECT id, status FROM connected_mailboxes WHERE id = $1', [req.params.id]);
+  if (!mb) return res.code(404).send({ message: 'Mailbox not found' });
+  const newStatus = mb.status === 'active' ? 'paused' : 'active';
+  await db.query('UPDATE connected_mailboxes SET status = $1, updated_at = now() WHERE id = $2', [newStatus, req.params.id]);
+  return { ok: true, status: newStatus };
+});
+
+app.delete<{ Params: { id: string }; Querystring: { deleteLocalData?: string } }>('/api/connected-mailboxes/:id', async (req, res) => {
+  const deleteLocalData = req.query.deleteLocalData === 'true' || req.query.deleteLocalData === '1';
+  await disconnectConnectedMailbox(req.params.id, deleteLocalData);
+  return { ok: true };
 });
 
 app.get('/api/inboxes', async () => (await db.query(`

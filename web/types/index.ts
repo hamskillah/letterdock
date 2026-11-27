@@ -202,3 +202,30 @@ export interface TailscaleVerifyOriginResponse {
   allowed: boolean;
   reason: string;
 }
+
+export interface ConnectedMailbox {
+  id: string;
+  workspace_id: string;
+  provider: 'google' | 'microsoft';
+  email: string;
+  display_name: string | null;
+  status: 'active' | 'paused' | 'revoked' | 'error';
+  last_error: string | null;
+  last_synced_at: string | null;
+  direction: 'inbound_only';
+  granted_scopes: string[];
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+}
+
+export interface OAuthProviderStatus {
+  configured: boolean;
+  fromEnv: boolean;
+  clientId: string;
+}
+
+export interface OAuthProvidersResponse {
+  google: OAuthProviderStatus;
+  microsoft: OAuthProviderStatus;
+}

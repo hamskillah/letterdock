@@ -461,6 +461,16 @@ export class OutboundError extends Error {
 export async function sendEmail(options: SendEmailOptions): Promise<{ id: string }> {
   const workspaceId = options.workspaceId || 'default';
 
+  // Inbound-Only Security Barrier: Connected external mailboxes (Gmail/Outlook) are strictly read-only
+  const { isSenderConnectedMailbox } = await import('./connected-mailboxes.js');
+  if (await isSenderConnectedMailbox(options.from, workspaceId)) {
+    throw new OutboundError(
+      `Connected external mailbox '${options.from}' is strictly read-only and cannot be used for outbound sending.`,
+      400,
+      'inbound_only_mailbox'
+    );
+  }
+
   // 1. Validate From address and Domain Verification
   const fromParsed = extractEmailAddress(options.from);
   const domain = fromParsed.domain;

@@ -44,6 +44,11 @@ export class WorkerPool {
       const { sendEmail } = await import('./outbound.js');
       await sendEmail(job.payload);
     });
+
+    this.registerHandler('sync_connected_mailbox', async (job) => {
+      const { syncConnectedMailbox } = await import('./connected-mailboxes.js');
+      await syncConnectedMailbox(job.payload.mailboxId, job.payload.maxMessages);
+    });
   }
 
   public registerHandler<T = any>(jobType: string, handler: JobHandler<T>) {

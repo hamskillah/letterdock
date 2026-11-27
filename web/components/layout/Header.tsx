@@ -47,7 +47,8 @@ export const Header: React.FC<HeaderProps> = ({
               const pageTitleMap: Record<string, string> = {
                 ApiKeys: 'API Keys',
                 Outbound: 'Outbound Relay',
-                Tailscale: 'Tailscale Access'
+                Tailscale: 'Tailscale Access',
+                ConnectedMailboxes: 'Connected Accounts'
               };
               const displayTitle = page === 'Inbox' ? heading : (pageTitleMap[page] || page);
               return <strong className="ellipsis" aria-current="page">{displayTitle}</strong>;

@@ -376,7 +376,20 @@ export async function runJobs() {
     db.query(`DELETE FROM deliveries WHERE id IN (
       SELECT id FROM deliveries WHERE message_removed_at<now()-interval '30 days' LIMIT 100
     )`),
-    applyRetention()
+    applyRetention(),
+    // Sync active connected mailboxes (Gmail/Outlook read-only)
+    (async () => {
+      const { rows: mailboxes } = await db.query(
+        "SELECT id FROM connected_mailboxes WHERE status = 'active' AND (last_synced_at IS NULL OR last_synced_at < now() - interval '2 minutes') LIMIT 5"
+      );
+      for (const mb of mailboxes) {
+        const { syncConnectedMailbox } = await import('./connected-mailboxes.js');
+        await syncConnectedMailbox(mb.id).catch(err => {
+          console.error('[Mailbox Sync Error]', mb.id, (err as Error).message);
+        });
+      }
+    })(),
+    db.query("DELETE FROM oauth_states WHERE expires_at < now()")
   ]).then(results => results.forEach(result => {
     if (result.status === 'rejected') console.error('Background job failed', result.reason);
   }));
