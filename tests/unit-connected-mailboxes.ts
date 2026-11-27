@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 process.env.APP_ENCRYPTION_KEY = 'test-app-encryption-key-must-be-at-least-32-characters-long!';
 process.env.SESSION_SECRET = 'test-session-secret-over-32-characters-long!';
-import { db } from '../src/db.js';
+import { db, migrate } from '../src/db.js';
+
+await migrate();
 import {
   saveOAuthProviderConfig,
   getOAuthProviderConfig,
