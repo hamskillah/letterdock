@@ -14,7 +14,10 @@ import {
   CircleGauge,
   BookOpen,
   LogOut,
-  X
+  X,
+  LayoutTemplate,
+  Sliders,
+  BarChart3
 } from 'lucide-react';
 import type { Domain, Address } from '../../types/index.js';
 
@@ -155,6 +158,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <Send size={17} />
             <span>Outbound Relay</span>
+          </button>
+          <button
+            className={page === 'Templates' ? 'active' : ''}
+            aria-current={page === 'Templates' ? 'page' : undefined}
+            onClick={() => onNavigate('Templates')}
+          >
+            <LayoutTemplate size={17} />
+            <span>Templates</span>
+          </button>
+          <button
+            className={page === 'Rules' ? 'active' : ''}
+            aria-current={page === 'Rules' ? 'page' : undefined}
+            onClick={() => onNavigate('Rules')}
+          >
+            <Sliders size={17} />
+            <span>Rules</span>
+          </button>
+          <button
+            className={page === 'Analytics' ? 'active' : ''}
+            aria-current={page === 'Analytics' ? 'page' : undefined}
+            onClick={() => onNavigate('Analytics')}
+          >
+            <BarChart3 size={17} />
+            <span>Analytics</span>
           </button>
           <button
             className={page === 'Suppressions' ? 'active' : ''}

@@ -24,6 +24,15 @@ import {
   type TailscaleSettings,
   type TailscaleHostInfo
 } from './tailscale.js';
+import { renderTemplate, extractVariables } from './templates.js';
+import { parseSearchQuery, getConversationThread } from './threads.js';
+import {
+  TRANSPARENT_GIF_BUFFER,
+  verifyTrackingToken,
+  recordEmailEvent,
+  getAnalyticsOverview
+} from './analytics.js';
+import { evaluateRule, type InboundRule } from './rules.js';
 
 const app = Fastify({
   logger: true,
@@ -136,8 +145,13 @@ app.addHook('preHandler', async (req, res) => {
     return;
   }
 
-  // Resend API endpoints (/emails, /domains, /api-keys) - accessible via Bearer API Key OR active admin session
-  if (path.startsWith('/emails') || path.startsWith('/domains') || path.startsWith('/api-keys')) {
+  // Public open/click tracking endpoints
+  if (path.startsWith('/t/o/') || path.startsWith('/t/c/')) {
+    return;
+  }
+
+  // Resend API endpoints (/emails, /domains, /api-keys, /templates) - accessible via Bearer API Key OR active admin session
+  if (path.startsWith('/emails') || path.startsWith('/domains') || path.startsWith('/api-keys') || path.startsWith('/templates')) {
     res.header('Cache-Control', 'no-store');
     const auth = req.headers.authorization;
     if (auth?.startsWith('Bearer ')) {
@@ -201,7 +215,14 @@ app.addHook('preHandler', async (req, res) => {
   }
 
   // Administrative APIs allow Bearer API keys as well as browser session
-  if (path.startsWith('/api/outbound/') || path.startsWith('/api/suppressions')) {
+  if (
+    path.startsWith('/api/outbound/') ||
+    path.startsWith('/api/suppressions') ||
+    path.startsWith('/api/templates') ||
+    path.startsWith('/api/rules') ||
+    path.startsWith('/api/analytics') ||
+    path.startsWith('/api/threads')
+  ) {
     const auth = req.headers.authorization;
     if (auth?.startsWith('Bearer ')) {
       const { rows: [key] } = await db.query(
@@ -299,27 +320,50 @@ app.post('/api/logout', async (req,res) => {
   return res.clearCookie('session',{path:'/'}).send({ok:true});
 });
 
-const summary = 'id,recipient,sender,subject,received,unread,starred,folder,labels,state';
+const summary = 'id,recipient,sender,subject,received,unread,starred,folder,labels,state,thread_id';
 app.get<{Querystring:Record<string,string>}>('/api/messages', async req => {
   const q = req.query;
-  const filters = [`folder=$1`];
-  const values: unknown[] = [q.folder || 'inbox'];
+  const parsedSearch = q.q ? parseSearchQuery(q.q) : null;
+  const targetFolder = parsedSearch?.folder || q.folder;
+
+  const filters: string[] = [];
+  const values: unknown[] = [];
   function filter(sql: string, value: unknown) { values.push(value); filters.push(sql.replace('?', '$'+values.length)); }
-  if(q.domain) filter('domain=?',q.domain);
-  if(q.address) filter('recipient=?',q.address);
-  if(q.q) filter("to_tsvector('simple', sender || ' ' || recipient || ' ' || subject || ' ' || body) @@ websearch_to_tsquery('simple', ?)",q.q);
-  if(q.from) filter('sender ILIKE ?', '%'+q.from+'%');
-  if(q.to) filter('recipient ILIKE ?', '%'+q.to+'%');
-  if(q.subject) filter('subject ILIKE ?', '%'+q.subject+'%');
-  if(q.label) filter('? = ANY(labels)',q.label);
-  if(q.since && /^\d{4}-\d{2}-\d{2}$/.test(q.since)) filter('received >= ?::date',q.since);
-  if(q.until && /^\d{4}-\d{2}-\d{2}$/.test(q.until)) filter("received < ?::date + interval '1 day'",q.until);
-  if(q.attachment==='true') filters.push('EXISTS (SELECT 1 FROM attachments a WHERE a.message=messages.id)');
-  if(q.unread==='true') filters.push('unread');
-  if(q.starred==='true') filters.push('starred');
-  if(q.cursor && uuid.test(q.cursor)) filter('(received,id) < (SELECT received,id FROM messages WHERE id=?)',q.cursor);
-  return (await db.query(`SELECT ${summary} FROM messages WHERE ${filters.join(' AND ')}
-    ORDER BY received DESC,id DESC LIMIT 100`,values)).rows;
+
+  if (targetFolder && targetFolder !== 'all') {
+    filter('folder=?', targetFolder);
+  } else if (!targetFolder && !q.q) {
+    filter('folder=?', 'inbox');
+  }
+
+  const fromVal = parsedSearch?.from || q.from;
+  const toVal = parsedSearch?.to || q.to;
+  const subjectVal = parsedSearch?.subject || q.subject;
+  const hasAttachment = parsedSearch?.hasAttachment || q.attachment === 'true';
+  const isUnread = parsedSearch?.isUnread || q.unread === 'true';
+  const isStarred = parsedSearch?.isStarred || q.starred === 'true';
+
+  if (q.domain) filter('domain=?', q.domain);
+  if (q.address) filter('recipient=?', q.address);
+  if (fromVal) filter('sender ILIKE ?', '%' + fromVal + '%');
+  if (toVal) filter('recipient ILIKE ?', '%' + toVal + '%');
+  if (subjectVal) filter('subject ILIKE ?', '%' + subjectVal + '%');
+  if (q.label) filter('? = ANY(labels)', q.label);
+  if (q.since && /^\d{4}-\d{2}-\d{2}$/.test(q.since)) filter('received >= ?::date', q.since);
+  if (q.until && /^\d{4}-\d{2}-\d{2}$/.test(q.until)) filter("received < ?::date + interval '1 day'", q.until);
+  if (hasAttachment) filters.push('EXISTS (SELECT 1 FROM attachments a WHERE a.message=messages.id)');
+  if (isUnread) filters.push('unread');
+  if (isStarred) filters.push('starred');
+
+  const textToSearch = parsedSearch ? parsedSearch.plainText : q.q;
+  if (textToSearch) {
+    filter("to_tsvector('simple', sender || ' ' || recipient || ' ' || subject || ' ' || body) @@ websearch_to_tsquery('simple', ?)", textToSearch);
+  }
+
+  if (q.cursor && uuid.test(q.cursor)) filter('(received,id) < (SELECT received,id FROM messages WHERE id=?)', q.cursor);
+  const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+  return (await db.query(`SELECT ${summary} FROM messages ${whereClause}
+    ORDER BY received DESC,id DESC LIMIT 100`, values)).rows;
 });
 app.get<{Params:{id:string}}>('/api/messages/:id', async (req,res) => {
   if(!uuid.test(req.params.id)) return res.code(404).send();
@@ -975,7 +1019,13 @@ app.post('/emails', async (req, res) => {
       headers: body.headers,
       attachments: body.attachments,
       tags: body.tags,
-      idempotencyKey
+      idempotencyKey,
+      template: body.template,
+      variables: body.variables,
+      trackOpens: body.track_opens !== undefined ? Boolean(body.track_opens) : (body.trackOpens !== undefined ? Boolean(body.trackOpens) : undefined),
+      trackClicks: body.track_clicks !== undefined ? Boolean(body.track_clicks) : (body.trackClicks !== undefined ? Boolean(body.trackClicks) : undefined),
+      threadId: body.thread_id || body.threadId,
+      inReplyTo: body.in_reply_to || body.inReplyTo
     });
 
     return res.code(200).send({ id: result.id });
@@ -1061,7 +1111,13 @@ app.post('/emails/batch', async (req, res) => {
         replyTo: item.reply_to || item.replyTo,
         headers: item.headers,
         attachments: item.attachments,
-        tags: item.tags
+        tags: item.tags,
+        template: item.template,
+        variables: item.variables,
+        trackOpens: item.track_opens !== undefined ? Boolean(item.track_opens) : (item.trackOpens !== undefined ? Boolean(item.trackOpens) : undefined),
+        trackClicks: item.track_clicks !== undefined ? Boolean(item.track_clicks) : (item.trackClicks !== undefined ? Boolean(item.trackClicks) : undefined),
+        threadId: item.thread_id || item.threadId,
+        inReplyTo: item.in_reply_to || item.inReplyTo
       });
       results.push({ id: result.id });
     } catch (err: any) {
@@ -1436,6 +1492,372 @@ app.post<{ Body: { email: string; details?: string; domain?: string } }>('/api/w
   }
   await addSuppression(workspaceId, email, 'complaint', details || 'spam complaint', domain);
   return { ok: true, suppressed: true };
+});
+
+// -------------------------------------------------------------
+// Public Open & Click Tracking Endpoints
+// -------------------------------------------------------------
+app.get<{ Params: { '*': string } }>('/t/o/*', async (req, res) => {
+  let rawToken = req.params['*'] || '';
+  if (rawToken.endsWith('.gif')) {
+    rawToken = rawToken.slice(0, -4);
+  }
+  const payload = verifyTrackingToken(rawToken);
+  if (payload) {
+    await recordEmailEvent({
+      workspaceId: payload.wid,
+      messageId: payload.mid,
+      outboundId: payload.oid,
+      recipient: payload.rcpt,
+      eventType: 'opened',
+      metadata: {
+        userAgent: req.headers['user-agent'],
+        ip: req.ip
+      }
+    }).catch(err => console.error('[Tracking Open Error]:', err));
+  }
+  res.header('Content-Type', 'image/gif');
+  res.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  return res.send(TRANSPARENT_GIF_BUFFER);
+});
+
+app.get<{ Params: { '*': string } }>('/t/c/*', async (req, res) => {
+  const token = req.params['*'] || '';
+  const payload = verifyTrackingToken(token);
+  if (!payload || !payload.url) {
+    return res.code(400).send({ message: 'Invalid or expired tracking link' });
+  }
+  await recordEmailEvent({
+    workspaceId: payload.wid,
+    messageId: payload.mid,
+    outboundId: payload.oid,
+    recipient: payload.rcpt,
+    eventType: 'clicked',
+    metadata: {
+      targetUrl: payload.url,
+      userAgent: req.headers['user-agent'],
+      ip: req.ip
+    }
+  }).catch(err => console.error('[Tracking Click Error]:', err));
+  return res.redirect(payload.url, 302);
+});
+
+// -------------------------------------------------------------
+// Transactional Email Templates API
+// -------------------------------------------------------------
+const handleListTemplates = async (req: FastifyRequest) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { rows } = await db.query(
+    `SELECT id, name, slug, description, subject, variables, sample_data, created_at, updated_at
+     FROM templates WHERE workspace_id = $1 ORDER BY updated_at DESC`,
+    [workspaceId]
+  );
+  return { data: rows };
+};
+app.get('/templates', handleListTemplates);
+app.get('/api/templates', handleListTemplates);
+
+const handleCreateTemplate = async (req: FastifyRequest, res: any) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const body = req.body as any;
+
+  if (!body || !body.name) {
+    return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Template name is required' });
+  }
+
+  const slug = (body.slug || body.name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+
+  const subject = body.subject || '';
+  const htmlContent = body.html_content || body.html || '';
+  const textContent = body.text_content || body.text || '';
+  const description = body.description || '';
+  const sampleData = body.sample_data || body.sampleData || {};
+
+  // Automatically extract variables from subject, HTML, and text
+  const combined = `${subject} ${htmlContent} ${textContent}`;
+  const extracted = extractVariables(combined);
+  const variables = body.variables && Array.isArray(body.variables) ? body.variables : extracted;
+
+  try {
+    const { rows: [created] } = await db.query(
+      `INSERT INTO templates (
+        workspace_id, name, slug, description, subject, html_content, text_content, variables, sample_data
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING id, name, slug, description, subject, html_content, text_content, variables, sample_data, created_at, updated_at`,
+      [workspaceId, body.name, slug, description, subject, htmlContent, textContent, JSON.stringify(variables), JSON.stringify(sampleData)]
+    );
+    return res.code(201).send(created);
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      return res.code(409).send({ name: 'conflict', statusCode: 409, message: `Template with slug '${slug}' already exists` });
+    }
+    throw err;
+  }
+};
+app.post('/templates', handleCreateTemplate);
+app.post('/api/templates', handleCreateTemplate);
+
+const handleGetTemplate = async (req: FastifyRequest<{ Params: { id: string } }>, res: any) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { id } = req.params;
+
+  const { rows: [tpl] } = await db.query(
+    `SELECT id, name, slug, description, subject, html_content, text_content, variables, sample_data, created_at, updated_at
+     FROM templates WHERE workspace_id = $1 AND (id::text = $2 OR slug = $2) LIMIT 1`,
+    [workspaceId, id]
+  );
+  if (!tpl) return res.code(404).send({ name: 'not_found', statusCode: 404, message: 'Template not found' });
+  return tpl;
+};
+app.get<{ Params: { id: string } }>('/templates/:id', handleGetTemplate);
+app.get<{ Params: { id: string } }>('/api/templates/:id', handleGetTemplate);
+
+const handleUpdateTemplate = async (req: FastifyRequest<{ Params: { id: string } }>, res: any) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { id } = req.params;
+  const body = req.body as any;
+
+  const { rows: [existing] } = await db.query(
+    `SELECT id, name, slug, description, subject, html_content, text_content, variables, sample_data
+     FROM templates WHERE workspace_id = $1 AND (id::text = $2 OR slug = $2) LIMIT 1`,
+    [workspaceId, id]
+  );
+  if (!existing) return res.code(404).send({ name: 'not_found', statusCode: 404, message: 'Template not found' });
+
+  const name = body.name ?? existing.name;
+  const slug = body.slug ?? existing.slug;
+  const description = body.description ?? existing.description;
+  const subject = body.subject ?? existing.subject;
+  const htmlContent = body.html_content ?? body.html ?? existing.html_content;
+  const textContent = body.text_content ?? body.text ?? existing.text_content;
+  const sampleData = body.sample_data ?? body.sampleData ?? existing.sample_data;
+
+  const combined = `${subject} ${htmlContent} ${textContent}`;
+  const extracted = extractVariables(combined);
+  const variables = body.variables && Array.isArray(body.variables) ? body.variables : extracted;
+
+  const { rows: [updated] } = await db.query(
+    `UPDATE templates
+     SET name = $3, slug = $4, description = $5, subject = $6, html_content = $7, text_content = $8,
+         variables = $9, sample_data = $10, updated_at = now()
+     WHERE workspace_id = $1 AND id = $2
+     RETURNING id, name, slug, description, subject, html_content, text_content, variables, sample_data, created_at, updated_at`,
+    [workspaceId, existing.id, name, slug, description, subject, htmlContent, textContent, JSON.stringify(variables), JSON.stringify(sampleData)]
+  );
+  return updated;
+};
+app.put<{ Params: { id: string } }>('/templates/:id', handleUpdateTemplate);
+app.put<{ Params: { id: string } }>('/api/templates/:id', handleUpdateTemplate);
+
+const handleDeleteTemplate = async (req: FastifyRequest<{ Params: { id: string } }>, res: any) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { id } = req.params;
+
+  const result = await db.query(
+    `DELETE FROM templates WHERE workspace_id = $1 AND (id::text = $2 OR slug = $2)`,
+    [workspaceId, id]
+  );
+  if (result.rowCount === 0) {
+    return res.code(404).send({ name: 'not_found', statusCode: 404, message: 'Template not found' });
+  }
+  return { ok: true, deleted: true };
+};
+app.delete<{ Params: { id: string } }>('/templates/:id', handleDeleteTemplate);
+app.delete<{ Params: { id: string } }>('/api/templates/:id', handleDeleteTemplate);
+
+const handlePreviewTemplate = async (req: FastifyRequest<{ Params: { id: string } }>, res: any) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { id } = req.params;
+  const body = (req.body as any) || {};
+
+  const { rows: [tpl] } = await db.query(
+    `SELECT id, name, slug, subject, html_content, text_content, sample_data
+     FROM templates WHERE workspace_id = $1 AND (id::text = $2 OR slug = $2) LIMIT 1`,
+    [workspaceId, id]
+  );
+  if (!tpl) return res.code(404).send({ name: 'not_found', statusCode: 404, message: 'Template not found' });
+
+  const testData = { ...(tpl.sample_data || {}), ...(body.variables || body.data || {}) };
+  const rendered = renderTemplate(tpl, testData);
+  return {
+    template: { id: tpl.id, name: tpl.name, slug: tpl.slug },
+    rendered,
+    variablesUsed: testData
+  };
+};
+app.post<{ Params: { id: string } }>('/templates/:id/preview', handlePreviewTemplate);
+app.post<{ Params: { id: string } }>('/api/templates/:id/preview', handlePreviewTemplate);
+
+// -------------------------------------------------------------
+// Inbound Automation Rules API
+// -------------------------------------------------------------
+app.get('/api/rules', async (req) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { rows } = await db.query(
+    `SELECT id, name, priority, enabled, match_all, conditions, actions, created_at, updated_at
+     FROM inbound_rules WHERE workspace_id = $1 ORDER BY priority ASC, created_at ASC`,
+    [workspaceId]
+  );
+  return { data: rows };
+});
+
+app.post('/api/rules', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const body = req.body as any;
+
+  if (!body || !body.name) {
+    return res.code(422).send({ name: 'validation_error', statusCode: 422, message: 'Rule name is required' });
+  }
+
+  const priority = typeof body.priority === 'number' ? body.priority : 100;
+  const enabled = body.enabled !== undefined ? Boolean(body.enabled) : true;
+  const matchAll = body.match_all !== undefined ? Boolean(body.match_all) : true;
+  const conditions = Array.isArray(body.conditions) ? body.conditions : [];
+  const actions = Array.isArray(body.actions) ? body.actions : [];
+
+  const { rows: [rule] } = await db.query(
+    `INSERT INTO inbound_rules (workspace_id, name, priority, enabled, match_all, conditions, actions)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, name, priority, enabled, match_all, conditions, actions, created_at, updated_at`,
+    [workspaceId, body.name, priority, enabled, matchAll, JSON.stringify(conditions), JSON.stringify(actions)]
+  );
+  return res.code(201).send(rule);
+});
+
+app.get<{ Params: { id: string } }>('/api/rules/:id', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { rows: [rule] } = await db.query(
+    `SELECT id, name, priority, enabled, match_all, conditions, actions, created_at, updated_at
+     FROM inbound_rules WHERE workspace_id = $1 AND id::text = $2`,
+    [workspaceId, req.params.id]
+  );
+  if (!rule) return res.code(404).send({ name: 'not_found', statusCode: 404, message: 'Rule not found' });
+  return rule;
+});
+
+app.put<{ Params: { id: string } }>('/api/rules/:id', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const body = req.body as any;
+
+  const { rows: [existing] } = await db.query(
+    `SELECT id, name, priority, enabled, match_all, conditions, actions
+     FROM inbound_rules WHERE workspace_id = $1 AND id::text = $2`,
+    [workspaceId, req.params.id]
+  );
+  if (!existing) return res.code(404).send({ name: 'not_found', statusCode: 404, message: 'Rule not found' });
+
+  const name = body.name ?? existing.name;
+  const priority = typeof body.priority === 'number' ? body.priority : existing.priority;
+  const enabled = body.enabled !== undefined ? Boolean(body.enabled) : existing.enabled;
+  const matchAll = body.match_all !== undefined ? Boolean(body.match_all) : existing.match_all;
+  const conditions = Array.isArray(body.conditions) ? body.conditions : existing.conditions;
+  const actions = Array.isArray(body.actions) ? body.actions : existing.actions;
+
+  const { rows: [updated] } = await db.query(
+    `UPDATE inbound_rules
+     SET name = $3, priority = $4, enabled = $5, match_all = $6, conditions = $7, actions = $8, updated_at = now()
+     WHERE workspace_id = $1 AND id = $2
+     RETURNING id, name, priority, enabled, match_all, conditions, actions, created_at, updated_at`,
+    [workspaceId, existing.id, name, priority, enabled, matchAll, JSON.stringify(conditions), JSON.stringify(actions)]
+  );
+  return updated;
+});
+
+app.delete<{ Params: { id: string } }>('/api/rules/:id', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const result = await db.query(
+    `DELETE FROM inbound_rules WHERE workspace_id = $1 AND id::text = $2`,
+    [workspaceId, req.params.id]
+  );
+  if (result.rowCount === 0) {
+    return res.code(404).send({ name: 'not_found', statusCode: 404, message: 'Rule not found' });
+  }
+  return { ok: true, deleted: true };
+});
+
+app.post('/api/rules/test', async (req, res) => {
+  const body = req.body as any;
+  const rule: InboundRule = body?.rule;
+  const sampleMessage = body?.message || {
+    id: randomUUID(),
+    workspaceId: 'default',
+    domain: 'example.com',
+    sender: 'user@example.com',
+    recipient: 'hello@example.com',
+    subject: 'Test Subject',
+    body: 'Sample message body',
+    headers: {},
+    hasAttachments: false
+  };
+
+  if (!rule || !Array.isArray(rule.conditions)) {
+    return res.code(422).send({ message: 'Invalid rule payload' });
+  }
+
+  const matches = evaluateRule(rule, sampleMessage);
+  return {
+    matches,
+    simulatedActions: matches ? rule.actions : []
+  };
+});
+
+// -------------------------------------------------------------
+// Conversation Threading API
+// -------------------------------------------------------------
+app.get<{ Params: { id: string } }>('/api/threads/:id', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const thread = await getConversationThread(workspaceId, req.params.id);
+  return { thread_id: req.params.id, count: thread.length, messages: thread };
+});
+
+app.get<{ Params: { id: string } }>('/api/messages/:id/thread', async (req, res) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { id } = req.params;
+
+  const { rows: [msg] } = await db.query(
+    `SELECT id, thread_id FROM messages WHERE workspace_id = $1 AND id::text = $2 LIMIT 1`,
+    [workspaceId, id]
+  );
+
+  const targetThreadId = msg?.thread_id || id;
+  const thread = await getConversationThread(workspaceId, targetThreadId);
+  return { thread_id: targetThreadId, count: thread.length, messages: thread };
+});
+
+// -------------------------------------------------------------
+// Analytics & Deliverability API
+// -------------------------------------------------------------
+app.get('/api/analytics/overview', async (req) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  return await getAnalyticsOverview(workspaceId);
+});
+
+app.get('/api/analytics/events', async (req) => {
+  const scoped = apiScope.get(req);
+  const workspaceId = scoped?.workspace_id || 'default';
+  const { rows } = await db.query(
+    `SELECT id, message_id, outbound_id, recipient, event_type, metadata, created_at
+     FROM email_events WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 100`,
+    [workspaceId]
+  );
+  return { events: rows };
 });
 
 await migrate();

@@ -37,6 +37,9 @@ import { AddressList } from './components/addresses/AddressList.js';
 import { IntegrationsView } from './components/integrations/IntegrationsView.js';
 import { HealthView } from './components/health/HealthView.js';
 import { TailscaleConfigView } from './components/tailscale/TailscaleConfigView.js';
+import { TemplatesView } from './components/templates/TemplatesView.js';
+import { RulesView } from './components/rules/RulesView.js';
+import { AnalyticsView } from './components/analytics/AnalyticsView.js';
 import { useDensity } from './context/DensityContext.js';
 import { trashRetentionDays } from '../src/trash-policy.js';
 
@@ -1183,6 +1186,18 @@ export function App() {
               void action(() => navigator.clipboard.writeText(credential), 'Copied')
             }
           />
+        )}
+
+        {page === 'Templates' && (
+          <TemplatesView />
+        )}
+
+        {page === 'Rules' && (
+          <RulesView />
+        )}
+
+        {page === 'Analytics' && (
+          <AnalyticsView />
         )}
 
         {page === 'Tailscale' && (
